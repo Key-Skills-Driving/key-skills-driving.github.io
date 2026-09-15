@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -180,6 +180,7 @@ function parseRoute() {
       return { name: 'saved' };
     case 'review': return { name: 'review' };
     case 'settings': return { name: 'settings' };
+    case 'modify': return { name: 'modify', id: null }; // the fresh breakdown on the first tab
     default: return { name: 'write' };
   }
 }
@@ -331,9 +332,12 @@ function resultCard() {
     ${body}
     <div class="two">
       <button class="btn" data-action="save-result"${d.savedId ? ' disabled' : ''}>${d.savedId ? 'Saved ✓' : `${ICON.bookmark} Save`}</button>
-      <button class="btn" data-action="edit-result">${state.editingResult ? 'Done editing' : 'Edit'}</button>
+      <button class="btn" data-action="modify-result">${ICON.zap} Modify</button>
     </div>
-    <button class="btn btn-block btn-outline" data-action="start-over">New lesson</button>
+    <div class="two">
+      <button class="btn" data-action="edit-result">${state.editingResult ? 'Done editing' : 'Edit'}</button>
+      <button class="btn btn-outline" data-action="start-over">New lesson</button>
+    </div>
   </section>`;
 }
 
@@ -557,29 +561,41 @@ function itemCard(item, terms) {
   </div>`;
 }
 
-// ---------- modify: ask the AI to tweak a saved breakdown ----------
+// ---------- modify: ask the AI to tweak a breakdown ----------
+
+// What Modify is working on: a saved breakdown, or (no id) the fresh one on the Break down tab.
+function modifyTarget(id) {
+  if (!id) {
+    const d = state.draft;
+    return d.result ? { text: d.result, raw: d.raw, back: '/', keep: 'Use this version', pending: 'Not used yet' } : null;
+  }
+  const item = state.items.get(id);
+  return item ? { text: item.text, raw: item.raw, back: '/saved', keep: 'Save changes', pending: 'Not saved yet' } : null;
+}
 
 function renderModify(id) {
-  const item = state.items.get(id);
-  if (!item) return go('/saved', true);
-  if (state.modify?.id !== id) state.modify = { id, change: '', result: '', busy: false };
+  const target = modifyTarget(id);
+  if (!target) return go(id ? '/saved' : '/', true);
+  if (!state.modify || state.modify.id !== id) state.modify = { id, change: '', result: '', busy: false };
   const m = state.modify;
-  const provider = aiProvider();
-  const action = provider
+  const byHand = id
+    ? `use <a href="#/saved/${esc(id)}">Edit</a> to change it by hand`
+    : 'tap Edit under the breakdown to change it by hand';
+  const action = aiProvider()
     ? `<button class="btn btn-primary btn-block btn-tall" data-action="run-modify"${m.busy ? ' disabled' : ''}>
         ${m.busy ? '<span class="spinner" aria-hidden="true"></span> Making the changes…' : `${ICON.zap} Modify it`}
       </button>
       <p class="hint center">Uses your original notes and only changes what you ask.</p>`
-    : `<p class="hint">Modify needs one-tap AI. <a href="#/settings">Turn it on in Settings</a> (it's free), or use <a href="#/saved/${esc(id)}">Edit</a> to change it by hand.</p>`;
+    : `<p class="hint">Modify needs one-tap AI. <a href="#/settings">Turn it on in Settings</a> (it's free), or ${byHand}.</p>`;
   app.innerHTML = `
     ${header({ left: '<button class="bar-btn" data-action="leave-modify">Done</button>', title: 'Modify' })}
     <main class="view modify">
       <section class="card result">
-        <div class="result-head"><h2>${m.result ? 'New version' : 'Breakdown'}</h2>${m.result ? '<span class="pill pill-gold">Not saved yet</span>' : ''}</div>
+        <div class="result-head"><h2>${m.result ? 'New version' : 'Breakdown'}</h2>${m.result ? `<span class="pill pill-gold">${target.pending}</span>` : ''}</div>
         <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-modify">${ICON.copy} Copy</button>
-        <div class="text result-text">${esc(m.result || item.text)}</div>
+        <div class="text result-text">${esc(m.result || target.text)}</div>
         ${m.result ? `<div class="two">
-          <button class="btn" data-action="save-modify">Save changes</button>
+          <button class="btn" data-action="save-modify">${target.keep}</button>
           <button class="btn" data-action="undo-modify">Undo changes</button>
         </div>` : ''}
       </section>
@@ -594,8 +610,8 @@ function renderModify(id) {
 
 async function runModify() {
   const m = state.modify;
-  const item = m && state.items.get(m.id);
-  if (!item || m.busy) return;
+  const target = m && modifyTarget(m.id);
+  if (!target || m.busy) return;
   if (!m.change.trim()) {
     toast('First, say or type what should change');
     $('#mod-change')?.focus();
@@ -606,14 +622,14 @@ async function runModify() {
   render();
   const { geminiKey, apiKey, model, extra } = state.settings;
   const system = systemPrompt(extra);
-  const user = modifyMessage({ raw: item.raw, current: m.result || item.text, change: m.change });
+  const user = modifyMessage({ raw: target.raw, current: m.result || target.text, change: m.change });
   try {
     const text = aiProvider() === 'gemini'
       ? await writeWithGemini({ apiKey: geminiKey, system, user })
       : await writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
     m.result = cleanReply(text);
     m.change = '';
-    toast('Done. Tap Save changes to keep it.');
+    toast(`Done. Tap ${target.keep} to keep it.`);
   } catch (err) {
     toast(err.message);
   } finally {
@@ -628,8 +644,29 @@ async function runModify() {
 
 async function saveModify() {
   const m = state.modify;
-  const item = m && state.items.get(m.id);
-  if (!item || !m.result) return;
+  if (!m?.result) return;
+  if (!m.id) {
+    // The fresh breakdown takes the new version, and so does its saved copy if it has one,
+    // the same as editing it by hand.
+    const d = state.draft;
+    const saved = d.savedId && state.items.get(d.savedId);
+    if (saved) {
+      try {
+        await saveItem({ ...saved, text: m.result, updatedAt: Date.now() });
+      } catch {
+        toast("Couldn't update the saved copy. Try again.");
+        return;
+      }
+    }
+    d.result = m.result;
+    saveDraft(true);
+    state.modify = null;
+    toast('Using the new version');
+    backToBreakdown();
+    return;
+  }
+  const item = state.items.get(m.id);
+  if (!item) return;
   try {
     await saveItem({ ...item, text: m.result, updatedAt: Date.now() });
   } catch {
@@ -646,9 +683,16 @@ async function saveModify() {
 }
 
 function leaveModify() {
-  if (state.modify?.result && !confirm("Leave without saving the new version?")) return;
+  const m = state.modify;
+  if (m?.result && !confirm(m.id ? 'Leave without saving the new version?' : 'Leave without using the new version?')) return;
   state.modify = null;
-  go('/saved', true);
+  if (m?.id) go('/saved', true);
+  else backToBreakdown();
+}
+
+function backToBreakdown() {
+  go('/', true);
+  $('#result')?.scrollIntoView({ block: 'start' });
 }
 
 async function copyItem(el) {
@@ -882,7 +926,8 @@ function renderSettings() {
           <li>Your AI key is only ever sent to Google or OpenAI, and isn't included in backups.</li>
           <li>Backup files contain your breakdowns in plain text, so keep them private.</li>
         </ul>
-        <button class="btn btn-block btn-danger" data-action="erase-all">Erase everything on this phone</button>
+        <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key and settings. Nothing else on my phone is touched.</span></label>
+        <button id="wipe-btn" class="btn btn-block btn-danger" data-action="wipe-app" disabled>Wipe App</button>
       </section>
 
       <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
@@ -1023,15 +1068,28 @@ async function backup() {
   render();
 }
 
-// For a phone that's changing hands or someone leaving the school. The app's own files stay
-// cached so it still opens; everything personal goes.
-async function eraseEverything() {
-  if (!confirm("Erase all saved breakdowns, your AI keys and your settings from this phone? This can't be undone.")) return;
+// For a phone that's changing hands or someone leaving the school. Only this app's data goes;
+// its own files stay cached so it still opens.
+const WIPE_WARNING = [
+  'Wipe App?',
+  '',
+  'This deletes, from KSDS Lessons only:',
+  '• All saved and prewritten breakdowns',
+  '• Your AI key',
+  '• Your settings and review card changes',
+  '• Any breakdown you were in the middle of',
+  '',
+  "Nothing else on your phone is touched. This can't be undone.",
+].join('\n');
+
+async function wipeApp() {
+  if (!$('#wipe-ok')?.checked) return;
+  if (!confirm(WIPE_WARNING)) return;
   try {
     await db.clear('items');
     await db.clear('meta');
   } catch {
-    toast("Couldn't erase everything. Try again.");
+    toast("Couldn't wipe the app. Try again.");
     return;
   }
   state.items.clear();
@@ -1039,7 +1097,7 @@ async function eraseEverything() {
   state.draft = { raw: '', result: '', savedId: null };
   state.editingResult = false;
   state.query = '';
-  toast('Everything on this phone was erased');
+  toast('App wiped. Nothing else on your phone was touched.');
   go('/', true);
 }
 
@@ -1112,8 +1170,13 @@ const actions = {
     render();
   },
   'copy-modify': async () => {
-    const item = state.modify && state.items.get(state.modify.id);
-    if (item) toast((await copyText(state.modify.result || item.text)) ? 'Copied. Paste it anywhere.' : "Couldn't copy");
+    const target = state.modify && modifyTarget(state.modify.id);
+    if (target) toast((await copyText(state.modify.result || target.text)) ? 'Copied. Paste it anywhere.' : "Couldn't copy");
+  },
+  'modify-result': () => {
+    state.editingResult = false;
+    state.modify = { id: null, change: '', result: '', busy: false };
+    go('/modify');
   },
   'leave-modify': () => leaveModify(),
   'paste-gemini-key': (el) => pasteGeminiKey(el),
@@ -1144,7 +1207,7 @@ const actions = {
   'save-review-settings': () => saveReviewSettings(),
   backup: () => backup(),
   restore: () => $('#restore-file').click(),
-  'erase-all': () => eraseEverything(),
+  'wipe-app': () => wipeApp(),
 };
 
 document.addEventListener('click', (e) => {
@@ -1182,6 +1245,8 @@ document.addEventListener('input', (e) => {
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'restore-file') restoreFrom(e.target);
+  // Wipe App stays greyed out until the box is ticked.
+  if (e.target.id === 'wipe-ok') $('#wipe-btn').disabled = !e.target.checked;
 });
 
 // Hide the tab bar while the keyboard is up so it doesn't float over what you're typing.

@@ -29,6 +29,7 @@ export function systemPrompt(extra = '') {
     '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
     '- Professional, encouraging and specific, in plain language a parent understands.',
     '- Never use anyone\'s name. Wherever the notes name the student, write "the student" instead ("The student" at the start of a sentence). Refer to anyone else by their role, like "the parent".',
+    '- If the notes say the student has finished (for example, they passed or completed their driving test, or it was their last lesson), leave out the whole "Focus for next lesson" section, because there is no next lesson. If they didn\'t pass and will keep having lessons, include it.',
     '- Keep it concise, usually 100 to 180 words.',
   ];
   if (extra.trim()) lines.push('', `The instructor's own preferences (follow these): ${extra.trim()}`);
