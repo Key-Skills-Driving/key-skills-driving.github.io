@@ -1,108 +1,149 @@
-// Builds the text you paste into Claude or ChatGPT, and reads the reply back into note sections.
+// Turns a driving instructor's spoken notes into a professional lesson breakdown,
+// either by asking ChatGPT directly (with the user's own OpenAI API key) or by building
+// a prompt to paste into the Claude / ChatGPT app.
 
-export const SECTIONS = [
-  {
-    key: 'practiced', label: 'Practiced', heading: 'PRACTICED',
-    aliases: ['practiced', 'practised', 'practice', 'what we practiced', 'what we practised', 'covered', 'skills practiced', 'skills covered'],
-  },
-  {
-    key: 'wentWell', label: 'Went well', heading: 'WENT WELL',
-    aliases: ['went well', 'what went well', 'strengths', 'positives', 'did well'],
-  },
-  {
-    key: 'workOn', label: 'Work on', heading: 'WORK ON',
-    aliases: ['work on', 'to work on', 'needs work', 'needs improvement', 'areas to improve', 'areas for improvement', 'improve'],
-  },
-  {
-    key: 'nextTime', label: 'Next time', heading: 'NEXT TIME',
-    aliases: ['next time', 'next lesson', 'plan for next lesson', 'plan for next time', 'next steps'],
-  },
-];
-
+export const DEFAULT_MODEL = 'gpt-5.6-luna';
+const FALLBACK_MODEL = 'gpt-4o-mini';
 const OPENER = "I'm a driving instructor.";
-const BULLET = /^\s*(?:[-*•–—]|\d+[.)])\s+/;
 
-export function buildPrompt({ studentName, lessonNumber, dateLabel, minutes, previous, raw }) {
+export function systemPrompt(extra = '') {
   const lines = [
-    `${OPENER} Turn my voice notes from today's lesson into clear, short lesson notes.`,
+    "You turn a driving instructor's rough, spoken notes about a lesson into a clear, professional lesson breakdown that can be shared with the student and their parents.",
     '',
-    `Student: ${studentName}`,
-    `Lesson ${lessonNumber}: ${dateLabel}, ${minutes} minutes`,
+    'Use this format, in plain text (no markdown, no asterisks, no # headings):',
+    '',
+    'Lesson Breakdown – <lesson date>',
+    '<One sentence summing up the lesson.>',
+    '',
+    'Covered today:',
+    '- <skill or activity>',
+    '',
+    'How it went:',
+    '- <Skill>: <specifically what the student did well or struggled with>',
+    '',
+    'Focus for next lesson:',
+    '- <what to practice next>',
+    '',
+    'Rules:',
+    '- Use only what the instructor said or clearly implied. Never invent maneuvers, places, speeds or results.',
+    '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
+    '- Professional, encouraging and specific, in plain language a parent understands.',
+    '- Use the student\'s first name if the instructor mentions it; otherwise say "the student".',
+    '- Keep it concise, usually 100 to 180 words.',
   ];
-  const plan = previous && oneLine(previous.nextTime || previous.workOn);
-  if (plan) lines.push(`Plan from their last lesson (${previous.dateLabel}): ${plan}`);
-  lines.push(
-    '',
-    'My notes (dictated, so expect typos and rambling):',
-    '"""',
-    raw.trim(),
-    '"""',
-    '',
-    'Reply in plain text using exactly these four headings, in this order, each followed by short bullet points that start with "- ":',
-    '',
-    ...SECTIONS.map((s) => `${s.heading}:`),
-    '',
-    "Only use what I said or clearly implied - don't invent details. If my notes say how they did on last lesson's plan, include that. Make NEXT TIME a concrete plan for the next lesson. No intro, no sign-off, no bold or other formatting.",
-  );
+  if (extra.trim()) lines.push('', `The instructor's own preferences (follow these): ${extra.trim()}`);
   return lines.join('\n');
+}
+
+export function userMessage({ dateLabel, raw }) {
+  return `Lesson date: ${dateLabel}\n\nMy notes (dictated, so expect typos and rambling):\n"""\n${raw.trim()}\n"""`;
+}
+
+export function copyPrompt({ dateLabel, raw, extra }) {
+  return [
+    `${OPENER} Please write up a lesson breakdown from my notes below.`,
+    '',
+    systemPrompt(extra),
+    '',
+    userMessage({ dateLabel, raw }),
+    '',
+    'Reply with the breakdown only, no intro or sign-off.',
+  ].join('\n');
 }
 
 export const looksLikeOurPrompt = (text) => String(text).trim().startsWith(OPENER);
 
-export function parseReply(text) {
-  const result = { practiced: '', wentWell: '', workOn: '', nextTime: '', notes: '', matched: false };
-  const buckets = {};
-  let current = null;
-  for (const line of String(text).replace(/\r\n?/g, '\n').split('\n')) {
-    const heading = readHeading(line);
-    if (heading) {
-      current = heading.key;
-      result.matched = true;
-      buckets[current] ??= [];
-      if (heading.rest) buckets[current].push(heading.rest);
-    } else if (current) {
-      buckets[current].push(line);
-    }
-    // Anything before the first heading is a preamble ("Here are your notes:") and is dropped.
-  }
-  if (!result.matched) {
-    result.notes = tidy(text);
-    return result;
-  }
-  for (const s of SECTIONS) if (buckets[s.key]) result[s.key] = tidy(buckets[s.key].join('\n'));
-  return result;
-}
-
-export function shareText({ studentName, dateLabel, lesson }) {
-  const parts = [`${studentName} – lesson on ${dateLabel} (${lesson.minutes} min)`];
-  for (const s of SECTIONS) if (lesson[s.key]?.trim()) parts.push(`${s.label}:\n${lesson[s.key].trim()}`);
-  if (lesson.notes?.trim()) parts.push(`Notes:\n${lesson.notes.trim()}`);
-  if (parts.length === 1 && lesson.raw?.trim()) parts.push(lesson.raw.trim());
-  return parts.join('\n\n');
-}
-
-function readHeading(line) {
-  const s = line.trim().replace(/^#{1,6}\s*/, '').replace(/[*_]/g, '').trim();
-  if (!s) return null;
-  const colon = s.indexOf(':');
-  const label = (colon === -1 ? s : s.slice(0, colon)).toLowerCase().replace(/\s+/g, ' ').trim();
-  const section = SECTIONS.find((x) => x.aliases.includes(label));
-  return section ? { key: section.key, rest: colon === -1 ? '' : s.slice(colon + 1).trim() } : null;
-}
-
-function tidy(text) {
-  return String(text)
-    .split('\n')
-    .map((l) => l.trimEnd().replace(BULLET, '• ').replace(/\*\*(.+?)\*\*/g, '$1'))
-    .filter((l) => l.trim())
-    .join('\n')
+// Strip any markdown the AI adds anyway, and any "Here's your breakdown:" preamble.
+export function cleanReply(text) {
+  let t = String(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/^(\s*)[-*•]\s+/gm, '$1• ')
     .trim();
+  const start = t.search(/^lesson breakdown/im);
+  if (start > 0) t = t.slice(start);
+  return t.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-function oneLine(text) {
-  return String(text || '')
-    .split('\n')
-    .map((l) => l.replace(BULLET, '').trim())
-    .filter(Boolean)
-    .join('; ');
+class FriendlyError extends Error {}
+
+async function callChat({ apiKey, model, system, user, lowEffort, signal }) {
+  const body = {
+    model,
+    messages: [
+      { role: 'system', content: system },
+      { role: 'user', content: user },
+    ],
+  };
+  if (lowEffort) body.reasoning_effort = 'low';
+  return fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(body),
+    signal,
+  });
+}
+
+function explain(status, err) {
+  const code = err?.error?.code || '';
+  if (status === 401) return 'OpenAI didn\'t accept your API key. Check it in Settings.';
+  if (code === 'insufficient_quota') return 'Your OpenAI account is out of credit. Add some at platform.openai.com under Billing.';
+  if (status === 429) return 'ChatGPT is busy right now. Wait a few seconds and try again.';
+  if (status === 404 || code === 'model_not_found') return 'That ChatGPT model isn\'t available on your account. Check the model in Settings.';
+  if (status >= 500) return 'ChatGPT is having problems right now. Try again, or use Copy for ChatGPT.';
+  return err?.error?.message || `ChatGPT returned an error (${status}).`;
+}
+
+export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, user }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  try {
+    let usedModel = model || DEFAULT_MODEL;
+    let lowEffort = true;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const res = await callChat({ apiKey, model: usedModel, system, user, lowEffort, signal: controller.signal });
+      const data = await res.json().catch(() => null);
+      if (res.ok) {
+        const text = data?.choices?.[0]?.message?.content?.trim();
+        if (!text) throw new FriendlyError('ChatGPT sent back an empty answer. Try again.');
+        return text;
+      }
+      const message = `${data?.error?.param || ''} ${data?.error?.message || ''}`;
+      // Older models don't take reasoning_effort; retry without it.
+      if (res.status === 400 && lowEffort && /reasoning/i.test(message)) {
+        lowEffort = false;
+        continue;
+      }
+      // If the default model isn't on this account, fall back to an older small one.
+      if ((res.status === 404 || data?.error?.code === 'model_not_found') && usedModel === DEFAULT_MODEL) {
+        usedModel = FALLBACK_MODEL;
+        continue;
+      }
+      throw new FriendlyError(explain(res.status, data));
+    }
+    throw new FriendlyError('ChatGPT couldn\'t write the breakdown. Try again.');
+  } catch (err) {
+    if (err instanceof FriendlyError) throw err;
+    if (err?.name === 'AbortError') throw new Error('ChatGPT took too long. Try again.');
+    throw new Error('No connection to ChatGPT. Try again when you have signal, or use Copy for ChatGPT.');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Free check that the key works and can use the model (listing a model costs nothing).
+export async function checkKey(apiKey, model = DEFAULT_MODEL) {
+  let res;
+  try {
+    res = await fetch(`https://api.openai.com/v1/models/${encodeURIComponent(model)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+  } catch {
+    return { ok: false, message: 'No connection. Check your signal and try again.' };
+  }
+  if (res.ok) return { ok: true };
+  const data = await res.json().catch(() => null);
+  if (res.status === 404 && model === DEFAULT_MODEL) return { ok: true, note: `Using ${FALLBACK_MODEL}, since ${DEFAULT_MODEL} isn't on your account yet.` };
+  return { ok: false, message: explain(res.status, data) };
 }

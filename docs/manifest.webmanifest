@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "Lesson Notes",
-  "short_name": "Lesson Notes",
-  "description": "Driving lesson notes for every student, tidied up by AI from what you say.",
+  "name": "KSDS Lesson Breakdown",
+  "short_name": "KSDS Lessons",
+  "description": "Talk through a driving lesson and get a professional breakdown to copy and send.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

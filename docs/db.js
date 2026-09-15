@@ -1,7 +1,8 @@
-// Everything is stored on this device in IndexedDB. Nothing is uploaded anywhere.
+// Everything is stored on this device in IndexedDB. Nothing is uploaded anywhere
+// (except the words you send to ChatGPT when you use one-tap mode).
 
 const DB_NAME = 'lesson-notes';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise = null;
 
@@ -11,9 +12,7 @@ function openDb() {
       const req = indexedDB.open(DB_NAME, DB_VERSION);
       req.onupgradeneeded = () => {
         const db = req.result;
-        for (const name of ['students', 'lessons']) {
-          if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, { keyPath: 'id' });
-        }
+        if (!db.objectStoreNames.contains('items')) db.createObjectStore('items', { keyPath: 'id' });
         if (!db.objectStoreNames.contains('meta')) db.createObjectStore('meta');
       };
       req.onsuccess = () => {
@@ -60,10 +59,4 @@ export const db = {
   del: (store, key) => run(store, 'readwrite', (tx) => { tx.objectStore(store).delete(key); }),
   getMeta: (key) => run('meta', 'readonly', (tx) => tx.objectStore('meta').get(key)),
   setMeta: (key, value) => run('meta', 'readwrite', (tx) => { tx.objectStore('meta').put(value, key); }),
-  delMeta: (key) => run('meta', 'readwrite', (tx) => { tx.objectStore('meta').delete(key); }),
-  deleteStudent: (id, lessonIds) => run(['students', 'lessons'], 'readwrite', (tx) => {
-    tx.objectStore('students').delete(id);
-    const lessons = tx.objectStore('lessons');
-    lessonIds.forEach((lessonId) => lessons.delete(lessonId));
-  }),
 };
