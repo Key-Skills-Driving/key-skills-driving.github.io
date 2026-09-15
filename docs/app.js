@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.3.0';
+const VERSION = '2.4.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -106,6 +106,34 @@ async function copyText(text) {
   }
 }
 
+// Keeps the screen from dimming while something needs it: the review card is up, a breakdown
+// is being written, or you're dictating into the notes box. iOS drops the lock whenever the
+// app goes to the background, so it's taken again when the app comes back.
+const awakeReasons = new Set();
+let wakeLock = null;
+let wakeChain = Promise.resolve();
+
+function keepAwake(reason, on) {
+  if (on) awakeReasons.add(reason);
+  else awakeReasons.delete(reason);
+  syncWakeLock();
+}
+
+function syncWakeLock() {
+  wakeChain = wakeChain.then(async () => {
+    const want = awakeReasons.size > 0 && document.visibilityState === 'visible';
+    if (want && !wakeLock && navigator.wakeLock) {
+      const lock = await navigator.wakeLock.request('screen');
+      lock.addEventListener('release', () => { if (wakeLock === lock) wakeLock = null; });
+      wakeLock = lock;
+    } else if (!want && wakeLock) {
+      const lock = wakeLock;
+      wakeLock = null;
+      await lock.release();
+    }
+  }).catch(() => { wakeLock = null; });
+}
+
 let persistAsked = false;
 function askPersist() {
   if (persistAsked) return;
@@ -160,7 +188,8 @@ function render() {
   const r = parseRoute();
   const key = `${r.name}:${r.id ?? ''}`;
   document.body.classList.remove('typing');
-  if (r.name !== 'review') keepAwake(false);
+  keepAwake('review', r.name === 'review');
+  keepAwake('dictating', false); // re-rendering replaces the notes box, so it's no longer focused
   switch (r.name) {
     case 'saved': renderSaved(); break;
     case 'item': renderItem(r.id); break;
@@ -311,6 +340,8 @@ function needRaw() {
 async function generate() {
   if (state.busy || needRaw()) return;
   state.busy = true;
+  // If the screen locked mid-request, iOS would pause the app and the answer could be lost.
+  keepAwake('writing', true);
   refreshWrite();
   const { geminiKey, apiKey, model, extra } = state.settings;
   const system = systemPrompt(extra);
@@ -326,6 +357,8 @@ async function generate() {
     state.busy = false;
     refreshWrite();
     toast(err.message);
+  } finally {
+    keepAwake('writing', false);
   }
 }
 
@@ -554,21 +587,6 @@ async function deleteItem(id) {
 
 // ---------- tab 3: review card ----------
 
-let wakeLock = null;
-async function keepAwake(on) {
-  try {
-    if (on && !wakeLock && navigator.wakeLock) {
-      wakeLock = await navigator.wakeLock.request('screen');
-      wakeLock.addEventListener('release', () => { wakeLock = null; });
-    } else if (!on && wakeLock) {
-      await wakeLock.release();
-      wakeLock = null;
-    }
-  } catch {
-    wakeLock = null;
-  }
-}
-
 function reviewMessage() {
   const { schoolName, reviewUrl } = state.settings;
   return `Thanks for choosing ${schoolName || 'us'}! If you have a minute, a quick review would mean a lot and helps other families find us: ${reviewUrl}`;
@@ -598,7 +616,6 @@ function renderReview() {
     ${header({ title: 'Review', right: `<button class="bar-btn strong" data-action="share-review">${ICON.send}<span>Send</span></button>` })}
     <main class="view with-tabs review-view">${card}</main>
     ${tabbar('review')}`;
-  keepAwake(true);
 }
 
 function drawnReviewCard() {
@@ -657,7 +674,7 @@ function renderSettings() {
                <input id="st-gemini-key" type="password" placeholder="AIza…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
              <button class="btn btn-primary btn-block" data-action="save-gemini-key">Save key</button>`}
         <p class="fine"><strong>Why it's free:</strong> you never give Google a card, so it can't charge you. If you ever hit the free daily limit, it just asks you to wait. Don't turn on billing in AI Studio.</p>
-        <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Use first names only.</p>
+        <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Breakdowns never include names, but what you dictate is sent as you said it, so leave out last names.</p>
         <p class="fine">The key stays on this phone and isn't included in backups.</p>
       </section>
 
@@ -914,8 +931,11 @@ document.addEventListener('change', (e) => {
 const TYPING = 'textarea, select, input:not([type=checkbox]):not([type=file])';
 document.addEventListener('focusin', (e) => {
   if (e.target.matches?.(TYPING)) document.body.classList.add('typing');
+  // Dictating is hands-off, so without this the screen can lock mid-sentence.
+  if (e.target.id === 'raw') keepAwake('dictating', true);
 });
-document.addEventListener('focusout', () => {
+document.addEventListener('focusout', (e) => {
+  if (e.target.id === 'raw') keepAwake('dictating', false);
   setTimeout(() => {
     if (!document.activeElement?.matches?.(TYPING)) document.body.classList.remove('typing');
   }, 60);
@@ -923,7 +943,7 @@ document.addEventListener('focusout', () => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) saveDraft(true);
-  else if (parseRoute().name === 'review') keepAwake(true);
+  syncWakeLock();
 });
 addEventListener('pagehide', () => saveDraft(true));
 

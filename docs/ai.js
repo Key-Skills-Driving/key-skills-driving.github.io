@@ -28,7 +28,7 @@ export function systemPrompt(extra = '') {
     '- Use only what the instructor said or clearly implied. Never invent maneuvers, places, speeds or results.',
     '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
     '- Professional, encouraging and specific, in plain language a parent understands.',
-    '- Use the student\'s first name if the instructor mentions it; otherwise say "the student".',
+    '- Never use anyone\'s name. Wherever the notes name the student, write "the student" instead ("The student" at the start of a sentence). Refer to anyone else by their role, like "the parent".',
     '- Keep it concise, usually 100 to 180 words.',
   ];
   if (extra.trim()) lines.push('', `The instructor's own preferences (follow these): ${extra.trim()}`);
