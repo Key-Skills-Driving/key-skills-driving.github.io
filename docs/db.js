@@ -57,6 +57,7 @@ export const db = {
     values.forEach((v) => os.put(v));
   }),
   del: (store, key) => run(store, 'readwrite', (tx) => { tx.objectStore(store).delete(key); }),
+  clear: (store) => run(store, 'readwrite', (tx) => { tx.objectStore(store).clear(); }),
   getMeta: (key) => run('meta', 'readonly', (tx) => tx.objectStore('meta').get(key)),
   setMeta: (key, value) => run('meta', 'readwrite', (tx) => { tx.objectStore('meta').put(value, key); }),
 };

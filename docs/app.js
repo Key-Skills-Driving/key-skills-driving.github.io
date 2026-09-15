@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.4.0';
+const VERSION = '2.5.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -18,10 +18,13 @@ const REVIEW_DEFAULTS = {
   reviewFooter: 'Thank you for supporting a veteran-owned business',
 };
 
+// geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
+const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS });
+const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
+
 const state = {
   items: new Map(), // saved breakdowns: the ones you write up, plus prewritten ones
-  // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
-  settings: { lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS },
+  settings: defaultSettings(),
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
   busy: false,
   editingResult: false,
@@ -93,7 +96,7 @@ async function copyText(text) {
       const ta = document.createElement('textarea');
       ta.value = text;
       ta.setAttribute('readonly', '');
-      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;';
+      Object.assign(ta.style, { position: 'fixed', top: '0', left: '0', opacity: '0' });
       document.body.appendChild(ta);
       ta.select();
       ta.setSelectionRange(0, text.length);
@@ -160,7 +163,12 @@ async function saveItem(item) {
 // ---------- routing ----------
 
 function parseRoute() {
-  const p = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  let p;
+  try {
+    p = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(decodeURIComponent);
+  } catch {
+    p = []; // a mangled link shouldn't break the app; just show the first tab
+  }
   switch (p[0]) {
     case 'saved':
       if (p[1] === 'new') return { name: 'item', id: null };
@@ -412,6 +420,8 @@ function useReply(text) {
     toast("That's still the question. Copy the AI's reply first.");
     return;
   }
+  // Pasted text is saved, so check before keeping something that was on the clipboard by accident.
+  if (!/covered today|how it went|next lesson/i.test(text) && !confirm("That doesn't look like a lesson breakdown. Use it anyway?")) return;
   setResult(cleanReply(text));
 }
 
@@ -726,6 +736,17 @@ function renderSettings() {
         <input id="restore-file" type="file" accept=".json,application/json" hidden>
       </section>
 
+      <section class="card">
+        <h2>Privacy &amp; security</h2>
+        <ul class="steps">
+          <li>This app can't see anything else on your phone: no contacts, photos, location or other apps. It doesn't ask for any permissions.</li>
+          <li>Breakdowns, keys and settings are stored only on this phone. The only thing that leaves it is what you dictate, sent to Gemini (or ChatGPT) when you tap <strong>Break it down</strong>.</li>
+          <li>Your AI key is only ever sent to Google or OpenAI, and isn't included in backups.</li>
+          <li>Backup files contain your breakdowns in plain text, so keep them private.</li>
+        </ul>
+        <button class="btn btn-block btn-danger" data-action="erase-all">Erase everything on this phone</button>
+      </section>
+
       <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
     </main>`;
   $$('textarea', app).forEach(autosize);
@@ -813,6 +834,26 @@ async function backup() {
   render();
 }
 
+// For a phone that's changing hands or someone leaving the school. The app's own files stay
+// cached so it still opens; everything personal goes.
+async function eraseEverything() {
+  if (!confirm("Erase all saved breakdowns, your AI keys and your settings from this phone? This can't be undone.")) return;
+  try {
+    await db.clear('items');
+    await db.clear('meta');
+  } catch {
+    toast("Couldn't erase everything. Try again.");
+    return;
+  }
+  state.items.clear();
+  state.settings = defaultSettings();
+  state.draft = { raw: '', result: '', savedId: null };
+  state.editingResult = false;
+  state.query = '';
+  toast('Everything on this phone was erased');
+  go('/', true);
+}
+
 // Backups from version 1 (students and lesson notes) are turned into saved breakdowns.
 function itemsFromOldBackup(data) {
   const names = new Map((data.students || []).map((s) => [s.id, s.name]));
@@ -830,6 +871,10 @@ async function restoreFrom(input) {
   const file = input.files?.[0];
   input.value = '';
   if (!file) return;
+  if (file.size > MAX_BACKUP_BYTES) {
+    toast("That file is too big to be a backup from this app");
+    return;
+  }
   let data = null;
   try {
     data = JSON.parse(await file.text());
@@ -890,6 +935,7 @@ const actions = {
   'save-review-settings': () => saveReviewSettings(),
   backup: () => backup(),
   restore: () => $('#restore-file').click(),
+  'erase-all': () => eraseEverything(),
 };
 
 document.addEventListener('click', (e) => {
@@ -960,6 +1006,11 @@ function registerServiceWorker() {
 }
 
 async function start() {
+  // Refuse to run inside another website's frame, where taps could be tricked or spied on.
+  if (window.top !== window.self) {
+    app.innerHTML = '<main class="view"><div class="card"><h2>Open this app directly</h2><p>For your security it only runs on its own page: key-skills-driving.github.io</p></div></main>';
+    return;
+  }
   try {
     const [items, settings, draft] = await Promise.all([db.all('items'), db.getMeta('settings'), db.getMeta('draft')]);
     items.forEach((i) => state.items.set(i.id, i));
