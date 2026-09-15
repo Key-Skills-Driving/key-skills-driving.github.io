@@ -39,6 +39,16 @@ export function userMessage({ raw }) {
   return `My notes (dictated, so expect typos and rambling):\n"""\n${raw.trim()}\n"""`;
 }
 
+// Asks for small changes to an existing breakdown, with the original notes for context.
+export function modifyMessage({ raw, current, change }) {
+  return [
+    raw?.trim() ? `My original notes (dictated):\n"""\n${raw.trim()}\n"""` : '',
+    `The current lesson breakdown:\n"""\n${current.trim()}\n"""`,
+    `Change it like this: ${change.trim()}`,
+    'Only make the changes I asked for and keep everything else the same. Reply with the full updated breakdown only, in the same format.',
+  ].filter(Boolean).join('\n\n');
+}
+
 export function copyPrompt({ raw, extra }) {
   return [
     `${OPENER} Please write up a lesson breakdown from my notes below.`,

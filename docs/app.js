@@ -1,12 +1,12 @@
 import { db } from './db.js';
 import {
-  DEFAULT_MODEL, systemPrompt, userMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
+  DEFAULT_MODEL, systemPrompt, userMessage, modifyMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
   writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey,
 } from './ai.js';
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.5.0';
+const VERSION = '2.6.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -21,11 +21,14 @@ const REVIEW_DEFAULTS = {
 // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
 const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS });
 const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
+const APP_URL = new URL('./', location.href).href;
+const GEMINI_KEY = /AIza[0-9A-Za-z_-]{30,}/;
 
 const state = {
   items: new Map(), // saved breakdowns: the ones you write up, plus prewritten ones
   settings: defaultSettings(),
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
+  modify: null, // { id, change, result, busy }: asking the AI to change a saved breakdown
   busy: false,
   editingResult: false,
   query: '',
@@ -172,6 +175,7 @@ function parseRoute() {
   switch (p[0]) {
     case 'saved':
       if (p[1] === 'new') return { name: 'item', id: null };
+      if (p[1] && p[2] === 'modify') return { name: 'modify', id: p[1] };
       if (p[1]) return { name: 'item', id: p[1] };
       return { name: 'saved' };
     case 'review': return { name: 'review' };
@@ -201,6 +205,7 @@ function render() {
   switch (r.name) {
     case 'saved': renderSaved(); break;
     case 'item': renderItem(r.id); break;
+    case 'modify': renderModify(r.id); break;
     case 'review': renderReview(); break;
     case 'settings': renderSettings(); break;
     default: renderWrite();
@@ -231,11 +236,30 @@ function tabbar(active) {
   </div></nav>`;
 }
 
-function installBanner() {
+// On an iPhone, anything set up in a Safari tab stays in Safari, so install first.
+function inSafariNotInstalled() {
   const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  if (standalone || !ios) return '';
-  return `<div class="banner banner-gold"><div><strong>Add this to your Home Screen first.</strong> In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Breakdowns saved here in Safari stay in Safari and won't show up in the installed app.</div></div>`;
+  return ios && !standalone;
+}
+
+function installBanner() {
+  if (!inSafariNotInstalled()) return '';
+  return `<div class="banner banner-gold"><div><strong>Add this to your Home Screen first.</strong> In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Then open it from the new icon. Anything set up here in Safari stays in Safari.</div></div>`;
+}
+
+// First-run help for someone new: two buttons to turn on free Gemini.
+function setupCard() {
+  if (aiProvider() || state.settings.setupDismissed || inSafariNotInstalled()) return '';
+  return `<section class="card setup-card">
+    <h2>Turn on free AI</h2>
+    <p>Then <strong>Break it down</strong> writes the breakdown for you in one tap. It's free and takes about a minute.</p>
+    <a class="btn btn-primary btn-block" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">1. Get a free key from Google</a>
+    <p class="hint">Sign in with Google, tap <strong>Create API key</strong>, then copy it and come back.</p>
+    <button class="btn btn-block" data-action="paste-gemini-key">2. Paste key</button>
+    <p class="hint">Got a key from a coworker? Copy their whole message, then tap <strong>Paste key</strong>.</p>
+    <button class="link-btn" data-action="dismiss-setup">Not now</button>
+  </section>`;
 }
 
 function backupBanner() {
@@ -256,6 +280,7 @@ function renderWrite() {
     ${header({ title: 'Lesson Breakdown', right: settingsLink })}
     <main class="view with-tabs">
       ${installBanner()}
+      ${setupCard()}
       <label class="field"><span class="label big-label">What happened in the lesson?</span>
         <textarea id="raw" class="big" rows="6" placeholder="Tap here, then tap the 🎤 on your keyboard and talk it through: what you worked on, how they did, and what needs work.">${esc(d.raw)}</textarea></label>
       <p class="hint">Talk like you would to a coworker. Rambling is fine.</p>
@@ -305,9 +330,10 @@ function resultCard() {
     <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-result">${ICON.copy} Copy</button>
     ${body}
     <div class="two">
+      <button class="btn" data-action="save-result"${d.savedId ? ' disabled' : ''}>${d.savedId ? 'Saved ✓' : `${ICON.bookmark} Save`}</button>
       <button class="btn" data-action="edit-result">${state.editingResult ? 'Done editing' : 'Edit'}</button>
-      <button class="btn" data-action="start-over">New lesson</button>
     </div>
+    <button class="btn btn-block btn-outline" data-action="start-over">New lesson</button>
   </section>`;
 }
 
@@ -319,23 +345,31 @@ function refreshWrite({ scrollToResult = false } = {}) {
   if (scrollToResult) $('#result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-async function setResult(text) {
+// A fresh breakdown isn't kept unless the instructor taps Save.
+function setResult(text) {
   const d = state.draft;
-  const now = Date.now();
-  const existing = d.savedId && state.items.get(d.savedId);
-  const item = existing
-    ? { ...existing, text, raw: d.raw, updatedAt: now }
-    : { id: uid(), title: '', text, raw: d.raw, pinned: false, createdAt: now, updatedAt: now };
   d.result = text;
-  d.savedId = item.id;
+  d.savedId = null;
   state.editingResult = false;
   saveDraft(true);
+  refreshWrite({ scrollToResult: true });
+}
+
+async function saveResult() {
+  const d = state.draft;
+  if (!d.result.trim() || d.savedId) return;
+  const now = Date.now();
+  const item = { id: uid(), title: '', text: d.result, raw: d.raw, pinned: false, createdAt: now, updatedAt: now };
   try {
     await saveItem(item);
   } catch {
-    toast("Couldn't save it to Saved, but you can still copy it.");
+    toast("Couldn't save it. Try again.");
+    return;
   }
-  refreshWrite({ scrollToResult: true });
+  d.savedId = item.id;
+  saveDraft(true);
+  refreshWrite();
+  toast('Saved. Find it on the Saved tab.');
 }
 
 function needRaw() {
@@ -472,8 +506,8 @@ function savedResults() {
   if (!state.items.size) {
     return `<section class="card welcome">
       <h2>Nothing saved yet</h2>
-      <p>Every breakdown you write up on the <strong>Break down</strong> tab is saved here automatically.</p>
-      <p>Tap <strong>+ New</strong> to add prewritten breakdowns you use a lot. Tap any of them to copy it.</p>
+      <p>When a breakdown is worth keeping, tap <strong>Save</strong> under it on the <strong>Break down</strong> tab.</p>
+      <p>Tap <strong>+ New</strong> to add prewritten breakdowns you use a lot. Tap any of them to copy it, or <strong>Modify</strong> to have the AI tweak it.</p>
     </section>`;
   }
   const terms = state.query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -486,7 +520,7 @@ function savedResults() {
   if (!pinned.length && !recent.length) return `<p class="empty-note">Nothing matches “${esc(state.query)}”.</p>`;
   let html = '<p class="hint top-hint">Tap a breakdown to copy it.</p>';
   if (pinned.length) html += `<h2 class="list-title">Prewritten</h2><div class="list">${pinned.map((i) => itemCard(i, terms)).join('')}</div>`;
-  if (recent.length) html += `<h2 class="list-title">Recent</h2><div class="list">${recent.map((i) => itemCard(i, terms)).join('')}</div>`;
+  if (recent.length) html += `<h2 class="list-title">Saved</h2><div class="list">${recent.map((i) => itemCard(i, terms)).join('')}</div>`;
   return html;
 }
 
@@ -513,11 +547,108 @@ function itemCard(item, terms) {
   return `<div class="card item" role="button" tabindex="0" data-action="copy-item" data-id="${esc(item.id)}">
     <div class="item-head">
       <div class="item-title">${highlight(title, terms)}</div>
-      <a class="mini" href="#/saved/${esc(item.id)}">Edit</a>
+      <div class="item-actions">
+        <a class="mini" href="#/saved/${esc(item.id)}/modify">Modify</a>
+        <a class="mini" href="#/saved/${esc(item.id)}">Edit</a>
+      </div>
     </div>
     ${preview ? `<div class="item-text">${highlight(preview, terms)}</div>` : ''}
     <div class="item-foot">${when ? `<span>${esc(when)}</span>` : ''}<span class="copy-hint">${ICON.copy}<span>Tap to copy</span></span></div>
   </div>`;
+}
+
+// ---------- modify: ask the AI to tweak a saved breakdown ----------
+
+function renderModify(id) {
+  const item = state.items.get(id);
+  if (!item) return go('/saved', true);
+  if (state.modify?.id !== id) state.modify = { id, change: '', result: '', busy: false };
+  const m = state.modify;
+  const provider = aiProvider();
+  const action = provider
+    ? `<button class="btn btn-primary btn-block btn-tall" data-action="run-modify"${m.busy ? ' disabled' : ''}>
+        ${m.busy ? '<span class="spinner" aria-hidden="true"></span> Making the changes…' : `${ICON.zap} Modify it`}
+      </button>
+      <p class="hint center">Uses your original notes and only changes what you ask.</p>`
+    : `<p class="hint">Modify needs one-tap AI. <a href="#/settings">Turn it on in Settings</a> (it's free), or use <a href="#/saved/${esc(id)}">Edit</a> to change it by hand.</p>`;
+  app.innerHTML = `
+    ${header({ left: '<button class="bar-btn" data-action="leave-modify">Done</button>', title: 'Modify' })}
+    <main class="view modify">
+      <section class="card result">
+        <div class="result-head"><h2>${m.result ? 'New version' : 'Breakdown'}</h2>${m.result ? '<span class="pill pill-gold">Not saved yet</span>' : ''}</div>
+        <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-modify">${ICON.copy} Copy</button>
+        <div class="text result-text">${esc(m.result || item.text)}</div>
+        ${m.result ? `<div class="two">
+          <button class="btn" data-action="save-modify">Save changes</button>
+          <button class="btn" data-action="undo-modify">Undo changes</button>
+        </div>` : ''}
+      </section>
+      <section class="step">
+        <label class="field"><span class="label big-label">${m.result ? 'Anything else to change?' : 'What should change?'}</span>
+          <textarea id="mod-change" rows="3" placeholder="e.g. Make it shorter. Add that the student needs to check mirrors before braking.">${esc(m.change)}</textarea></label>
+        ${action}
+      </section>
+    </main>`;
+  $$('textarea', app).forEach(autosize);
+}
+
+async function runModify() {
+  const m = state.modify;
+  const item = m && state.items.get(m.id);
+  if (!item || m.busy) return;
+  if (!m.change.trim()) {
+    toast('First, say or type what should change');
+    $('#mod-change')?.focus();
+    return;
+  }
+  m.busy = true;
+  keepAwake('writing', true);
+  render();
+  const { geminiKey, apiKey, model, extra } = state.settings;
+  const system = systemPrompt(extra);
+  const user = modifyMessage({ raw: item.raw, current: m.result || item.text, change: m.change });
+  try {
+    const text = aiProvider() === 'gemini'
+      ? await writeWithGemini({ apiKey: geminiKey, system, user })
+      : await writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
+    m.result = cleanReply(text);
+    m.change = '';
+    toast('Done. Tap Save changes to keep it.');
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    m.busy = false;
+    keepAwake('writing', false);
+    if (parseRoute().name === 'modify' && state.modify === m) {
+      render();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+  }
+}
+
+async function saveModify() {
+  const m = state.modify;
+  const item = m && state.items.get(m.id);
+  if (!item || !m.result) return;
+  try {
+    await saveItem({ ...item, text: m.result, updatedAt: Date.now() });
+  } catch {
+    toast("Couldn't save the changes. Try again.");
+    return;
+  }
+  if (state.draft.savedId === item.id) {
+    state.draft.result = m.result;
+    saveDraft(true);
+  }
+  state.modify = null;
+  toast('Changes saved');
+  go('/saved', true);
+}
+
+function leaveModify() {
+  if (state.modify?.result && !confirm("Leave without saving the new version?")) return;
+  state.modify = null;
+  go('/saved', true);
 }
 
 async function copyItem(el) {
@@ -670,6 +801,12 @@ function renderSettings() {
     ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
     <main class="view settings">
       <section class="card">
+        <h2>Invite a coworker</h2>
+        <p>Texts them the link and the steps to set it up.</p>
+        <button class="btn btn-primary btn-block" data-action="invite">${ICON.send} Invite a coworker</button>
+      </section>
+
+      <section class="card">
         <h2>Free one-tap AI</h2>
         ${st.geminiKey
           ? `<p class="ok-line">Connected to Google Gemini (key ${esc(maskKey(st.geminiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app, free.</p>
@@ -682,7 +819,8 @@ function renderSettings() {
              </ol>
              <label class="field"><span class="label">Gemini API key</span>
                <input id="st-gemini-key" type="password" placeholder="AIza…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-             <button class="btn btn-primary btn-block" data-action="save-gemini-key">Save key</button>`}
+             <button class="btn btn-primary btn-block" data-action="save-gemini-key">Save key</button>
+             <button class="btn btn-block" data-action="paste-gemini-key">Paste key</button>`}
         <p class="fine"><strong>Why it's free:</strong> you never give Google a card, so it can't charge you. If you ever hit the free daily limit, it just asks you to wait. Don't turn on billing in AI Studio.</p>
         <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Breakdowns never include names, but what you dictate is sent as you said it, so leave out last names.</p>
         <p class="fine">The key stays on this phone and isn't included in backups.</p>
@@ -774,6 +912,57 @@ async function storeKey(button, { input, setting, check, success }) {
   saveSettings();
   toast(result.note || success);
   render();
+}
+
+// Reads a Gemini key off the clipboard: either a key someone copied from AI Studio, or a
+// coworker's whole invite message with the key in it.
+async function pasteGeminiKey(button) {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    text = '';
+  }
+  const key = text.match(GEMINI_KEY)?.[0];
+  if (!key) {
+    toast(text.trim() ? "There's no Gemini key on the clipboard. Copy the key first." : 'Copy the key first, then tap Paste key.');
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  const result = await checkGeminiKey(key);
+  if (!result.ok) {
+    button.disabled = false;
+    button.textContent = 'Paste key';
+    toast(result.message);
+    return;
+  }
+  state.settings.geminiKey = key;
+  saveSettings();
+  toast('Free AI is on. Break it down writes the breakdown for you now.');
+  render();
+}
+
+async function inviteCoworker() {
+  const key = state.settings.geminiKey;
+  const shareKey = !!key && confirm("Include your free Gemini key, so they don't have to get their own?\n\nIt can't cost you anything, but you'll share Google's free daily limit. Only send it to people at the school.");
+  const lines = [
+    "Here's the KSDS lesson breakdown app:",
+    APP_URL,
+    '',
+    '1. Open the link in Safari.',
+    '2. Tap Share, then Add to Home Screen.',
+    shareKey
+      ? '3. Copy this whole message, open the app from your Home Screen, and tap Paste key.'
+      : '3. Open the app from your Home Screen and follow "Turn on free AI".',
+  ];
+  if (shareKey) lines.push('', `Key: ${key}`);
+  const text = lines.join('\n');
+  if (navigator.share) {
+    try { await navigator.share({ text }); } catch { /* cancelled */ }
+    return;
+  }
+  toast((await copyText(text)) ? 'Invite copied. Paste it into a text message.' : "Couldn't copy the invite");
 }
 
 function forgetKey(setting, question) {
@@ -914,6 +1103,26 @@ const actions = {
   'paste-reply': () => pasteReply(),
   'use-paste': () => useFallbackPaste(),
   'copy-result': () => copyResult(),
+  'save-result': () => saveResult(),
+  'run-modify': () => runModify(),
+  'save-modify': () => saveModify(),
+  'undo-modify': () => {
+    if (!state.modify) return;
+    state.modify.result = '';
+    render();
+  },
+  'copy-modify': async () => {
+    const item = state.modify && state.items.get(state.modify.id);
+    if (item) toast((await copyText(state.modify.result || item.text)) ? 'Copied. Paste it anywhere.' : "Couldn't copy");
+  },
+  'leave-modify': () => leaveModify(),
+  'paste-gemini-key': (el) => pasteGeminiKey(el),
+  'dismiss-setup': () => {
+    state.settings.setupDismissed = true;
+    saveSettings();
+    render();
+  },
+  invite: () => inviteCoworker(),
   'edit-result': () => toggleEditResult(),
   'start-over': () => startOver(),
   'copy-item': (el) => copyItem(el),
@@ -961,6 +1170,8 @@ document.addEventListener('input', (e) => {
     saveDraft();
   } else if (t.id === 'result-text') {
     onResultEdit(t.value);
+  } else if (t.id === 'mod-change' && state.modify) {
+    state.modify.change = t.value;
   } else if (t.id === 'search') {
     state.query = t.value;
     $('#results').innerHTML = savedResults();
@@ -975,13 +1186,14 @@ document.addEventListener('change', (e) => {
 
 // Hide the tab bar while the keyboard is up so it doesn't float over what you're typing.
 const TYPING = 'textarea, select, input:not([type=checkbox]):not([type=file])';
+const DICTATION_BOXES = new Set(['raw', 'mod-change']);
 document.addEventListener('focusin', (e) => {
   if (e.target.matches?.(TYPING)) document.body.classList.add('typing');
   // Dictating is hands-off, so without this the screen can lock mid-sentence.
-  if (e.target.id === 'raw') keepAwake('dictating', true);
+  if (DICTATION_BOXES.has(e.target.id)) keepAwake('dictating', true);
 });
 document.addEventListener('focusout', (e) => {
-  if (e.target.id === 'raw') keepAwake('dictating', false);
+  if (DICTATION_BOXES.has(e.target.id)) keepAwake('dictating', false);
   setTimeout(() => {
     if (!document.activeElement?.matches?.(TYPING)) document.body.classList.remove('typing');
   }, 60);

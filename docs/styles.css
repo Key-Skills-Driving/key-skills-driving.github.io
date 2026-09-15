@@ -259,6 +259,12 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 
 /* ---------- break down tab ---------- */
 
+.setup-card { margin-bottom: 18px; border: 2px solid var(--gold); }
+.setup-card h2 { margin: 0 0 6px; font-size: 20px; }
+.setup-card p { margin: 0 0 12px; color: var(--ink-2); }
+.setup-card .hint { margin: 8px 2px 14px; }
+.setup-card .link-btn { display: block; margin: 0 auto; padding: 6px 12px; }
+
 .label.big-label { margin-bottom: 10px; color: var(--ink); font-size: 19px; }
 .write-actions { margin-top: 18px; }
 .write-actions .two { margin-bottom: 10px; }
@@ -289,6 +295,9 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 }
 .text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .result-copy { margin-top: 12px; }
+.result .two + .btn { margin-top: 10px; }
+.pill-gold { background: var(--gold-soft); color: var(--gold-ink); }
+.modify .step { margin-top: 22px; }
 .result-text { margin: 14px 2px 16px; font-size: 16px; line-height: 1.5; }
 .result-edit { margin: 14px 0 16px; font-size: 16px; }
 
@@ -299,6 +308,7 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 .item.copied { border-color: var(--good); box-shadow: 0 0 0 2px var(--good); }
 .item-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .item-title { padding-top: 6px; font-weight: 700; }
+.item-actions { display: flex; flex: none; gap: 6px; }
 .item-text {
   display: -webkit-box;
   margin-top: 4px;
