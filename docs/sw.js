@@ -1,6 +1,6 @@
 // Keeps the app working with no signal. Bump CACHE (and VERSION in app.js) on every release
 // so phones pick up the new files.
-const CACHE = 'lesson-notes-2.0.0';
+const CACHE = 'lesson-notes-2.1.0';
 const ASSETS = [
   './',
   'index.html',
@@ -10,6 +10,7 @@ const ASSETS = [
   'ai.js',
   'review.js',
   'vendor/qrcode.js',
+  'review-card.webp',
   'manifest.webmanifest',
   'icons/apple-touch-icon.png',
   'icons/icon-192.png',

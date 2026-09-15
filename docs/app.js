@@ -5,7 +5,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.0.0';
+const VERSION = '2.1.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -563,7 +563,24 @@ function schoolBrand(name) {
   </div>`;
 }
 
+// With the school's own link, show Eli's full review card (its QR code was replaced with one
+// that scans). With any other link, fall back to a drawn card with a QR code for that link.
 function renderReview() {
+  const { reviewUrl } = state.settings;
+  const card = reviewUrl === REVIEW_DEFAULTS.reviewUrl
+    ? `<div class="rv-image-wrap">
+        <img src="review-card.webp" width="1023" height="1537" alt="Please leave a review. Scan the QR code or go to tinyurl.com/KeySkillsReview. Key Skills Driving School, a veteran-owned business.">
+        <button class="rv-link-hit" data-action="copy-review" aria-label="Copy the review link"></button>
+      </div>`
+    : drawnReviewCard();
+  app.innerHTML = `
+    ${header({ title: 'Review', right: `<button class="bar-btn strong" data-action="share-review">${ICON.send}<span>Send</span></button>` })}
+    <main class="view with-tabs review-view">${card}</main>
+    ${tabbar('review')}`;
+  keepAwake(true);
+}
+
+function drawnReviewCard() {
   const { reviewUrl, reviewFooter, schoolName } = state.settings;
   let qr;
   try {
@@ -571,22 +588,16 @@ function renderReview() {
   } catch {
     qr = '<p class="rv-error">That review link is too long for a QR code. Change it in Settings.</p>';
   }
-  app.innerHTML = `
-    ${header({ title: 'Review', right: `<button class="bar-btn strong" data-action="share-review">${ICON.send}<span>Send</span></button>` })}
-    <main class="view with-tabs review-view">
-      <div class="review-card">
-        <h2 class="rv-title">Please leave a review</h2>
-        <div class="rv-stars" aria-label="Five stars">${ICON.star.repeat(5)}</div>
-        <p class="rv-sub">Help other families find a trusted school</p>
-        <div class="rv-qr">${qr}</div>
-        <button class="rv-link" data-action="copy-review" aria-label="Copy the review link">${esc(prettyUrl(reviewUrl))}</button>
-        <p class="rv-hint">Scan with your phone's camera</p>
-        ${schoolBrand(schoolName)}
-        ${reviewFooter ? `<p class="rv-thanks">${esc(reviewFooter)}</p>` : ''}
-      </div>
-    </main>
-    ${tabbar('review')}`;
-  keepAwake(true);
+  return `<div class="review-card">
+      <h2 class="rv-title">Please leave a review</h2>
+      <div class="rv-stars" aria-label="Five stars">${ICON.star.repeat(5)}</div>
+      <p class="rv-sub">Help other families find a trusted school</p>
+      <div class="rv-qr">${qr}</div>
+      <button class="rv-link" data-action="copy-review" aria-label="Copy the review link">${esc(prettyUrl(reviewUrl))}</button>
+      <p class="rv-hint">Scan with your phone's camera</p>
+      ${schoolBrand(schoolName)}
+      ${reviewFooter ? `<p class="rv-thanks">${esc(reviewFooter)}</p>` : ''}
+    </div>`;
 }
 
 async function shareReview() {
@@ -643,6 +654,7 @@ function renderSettings() {
 
       <section class="card">
         <h2>Review card</h2>
+        <p class="fine">With the Key Skills link, the Review tab shows your full card. Change the link and it shows a simpler card with a QR code for the new link.</p>
         <label class="field"><span class="label">Review link</span>
           <input id="st-url" type="url" value="${esc(st.reviewUrl)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
         <label class="field"><span class="label">School name</span>

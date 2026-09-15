@@ -126,7 +126,12 @@ export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, 
   } catch (err) {
     if (err instanceof FriendlyError) throw err;
     if (err?.name === 'AbortError') throw new Error('ChatGPT took too long. Try again.');
-    throw new Error('No connection to ChatGPT. Try again when you have signal, or use Copy for ChatGPT.');
+    if (!navigator.onLine) throw new Error('No signal. Try again when you have one, or use Copy for ChatGPT.');
+    // OpenAI hides its error replies (bad key, no credit) from web pages, so they surface here
+    // as a failed request. The model lookup does come back readable, so use it to find out why.
+    const check = await checkKey(apiKey, model || DEFAULT_MODEL);
+    if (!check.ok) throw new Error(check.message);
+    throw new Error("ChatGPT didn't answer. If it keeps happening, check that your OpenAI account has credit (platform.openai.com, under Billing).");
   } finally {
     clearTimeout(timer);
   }

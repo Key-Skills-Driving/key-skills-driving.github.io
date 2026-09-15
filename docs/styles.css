@@ -370,6 +370,35 @@ textarea.big { min-height: 170px; }
 /* ---------- review card (always light, so it scans well) ---------- */
 
 .review-view { padding-top: 12px; }
+
+/* Eli's full card, sized to fit between the header and the tab bar without scrolling. */
+.rv-image-wrap {
+  position: relative;
+  width: min(100%, 520px, calc((100vh - 136px - var(--safe-top) - var(--safe-bottom)) * 1023 / 1537));
+  width: min(100%, 520px, calc((100svh - 136px - var(--safe-top) - var(--safe-bottom)) * 1023 / 1537));
+  margin: 0 auto;
+  aspect-ratio: 1023 / 1537;
+}
+.rv-image-wrap img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 3% / 2%;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+}
+/* Invisible tap target over the link bar printed on the card. */
+.rv-link-hit {
+  position: absolute;
+  top: 61.4%;
+  left: 9.4%;
+  width: 81.2%;
+  height: 6.7%;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  cursor: pointer;
+}
+.rv-link-hit:active { background: rgba(255, 255, 255, 0.18); }
 .review-card {
   padding: 16px 14px 14px;
   border: 2px solid #13265c;
