@@ -12,7 +12,6 @@ export function systemPrompt(extra = '') {
     '',
     'Use this format, in plain text (no markdown, no asterisks, no # headings):',
     '',
-    'Lesson Breakdown – <lesson date>',
     '<One sentence summing up the lesson.>',
     '',
     'Covered today:',
@@ -25,6 +24,7 @@ export function systemPrompt(extra = '') {
     '- <what to practice next>',
     '',
     'Rules:',
+    '- Start straight with the summary sentence. No title, heading or date line.',
     '- Use only what the instructor said or clearly implied. Never invent maneuvers, places, speeds or results.',
     '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
     '- Professional, encouraging and specific, in plain language a parent understands.',
@@ -35,17 +35,17 @@ export function systemPrompt(extra = '') {
   return lines.join('\n');
 }
 
-export function userMessage({ dateLabel, raw }) {
-  return `Lesson date: ${dateLabel}\n\nMy notes (dictated, so expect typos and rambling):\n"""\n${raw.trim()}\n"""`;
+export function userMessage({ raw }) {
+  return `My notes (dictated, so expect typos and rambling):\n"""\n${raw.trim()}\n"""`;
 }
 
-export function copyPrompt({ dateLabel, raw, extra }) {
+export function copyPrompt({ raw, extra }) {
   return [
     `${OPENER} Please write up a lesson breakdown from my notes below.`,
     '',
     systemPrompt(extra),
     '',
-    userMessage({ dateLabel, raw }),
+    userMessage({ raw }),
     '',
     'Reply with the breakdown only, no intro or sign-off.',
   ].join('\n');
@@ -53,17 +53,32 @@ export function copyPrompt({ dateLabel, raw, extra }) {
 
 export const looksLikeOurPrompt = (text) => String(text).trim().startsWith(OPENER);
 
-// Strip any markdown the AI adds anyway, and any "Here's your breakdown:" preamble.
+const TITLE = /^lesson (?:breakdown|notes|summary|recap)\b/i;
+const DATE_ONLY = /^(?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*,?\s+)?(?:(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:st|nd|rd|th)?(?:,?\s+\d{4})?|\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)$/i;
+
+// Strip any markdown the AI adds anyway, plus anything it puts before the notes themselves:
+// a "Here's your breakdown:" preamble, a "Lesson Breakdown – date" title, or a bare date.
 export function cleanReply(text) {
-  let t = String(text)
+  const lines = String(text)
     .replace(/\r\n?/g, '\n')
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/^#{1,6}\s*/gm, '')
     .replace(/^(\s*)[-*•]\s+/gm, '$1• ')
-    .trim();
-  const start = t.search(/^lesson breakdown/im);
-  if (start > 0) t = t.slice(start);
-  return t.replace(/\n{3,}/g, '\n\n').trim();
+    .split('\n');
+  while (lines.length) {
+    const line = lines[0].trim();
+    const titled = line.match(/^lesson (?:breakdown|notes|summary|recap)\b[^:]*:\s*(.*)$/i);
+    if (titled && titled[1] && !DATE_ONLY.test(titled[1])) {
+      lines[0] = titled[1]; // "Lesson summary: Maya did well…" keeps the sentence
+      break;
+    }
+    if (!line || titled || TITLE.test(line) || DATE_ONLY.test(line) || /^here(?:'s| is| are)\b.*:$/i.test(line)) {
+      lines.shift();
+      continue;
+    }
+    break;
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
 class FriendlyError extends Error {}

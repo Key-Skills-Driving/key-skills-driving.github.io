@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -51,7 +51,6 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`);
 const prettyUrl = (url) => String(url).replace(/^https?:\/\//, '').replace(/\/$/, '');
-const longDate = (d = new Date()) => d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 
 function whenLabel(ms) {
   const d = new Date(ms);
@@ -315,7 +314,7 @@ async function generate() {
   refreshWrite();
   const { geminiKey, apiKey, model, extra } = state.settings;
   const system = systemPrompt(extra);
-  const user = userMessage({ dateLabel: longDate(), raw: state.draft.raw });
+  const user = userMessage({ raw: state.draft.raw });
   try {
     const text = aiProvider() === 'gemini'
       ? await writeWithGemini({ apiKey: geminiKey, system, user })
@@ -333,7 +332,7 @@ async function generate() {
 async function copyForAI(which) {
   if (needRaw()) return;
   const ai = AI_APPS[which];
-  const prompt = copyPrompt({ dateLabel: longDate(), raw: state.draft.raw, extra: state.settings.extra });
+  const prompt = copyPrompt({ raw: state.draft.raw, extra: state.settings.extra });
   const copied = await copyText(prompt);
   saveDraft(true);
   const box = $('#ai-next');
@@ -453,17 +452,28 @@ function itemTitle(item) {
 }
 
 function itemCard(item, terms) {
-  const title = itemTitle(item);
-  // Don't repeat the first line in the preview when it's being used as the title.
-  const lines = String(item.text).split('\n');
-  const preview = (item.title ? lines : lines.slice(lines.findIndex((l) => l.trim()) + 1)).join('\n').trim();
+  // Written-up breakdowns have no title of their own, so they're headed by when they were written.
+  // Untitled prewritten ones use their first line (and don't repeat it in the preview).
+  const text = String(item.text);
+  let title = item.title;
+  let preview = text;
+  let when = item.pinned ? '' : whenLabel(item.createdAt);
+  if (!title && !item.pinned) {
+    title = when;
+    when = '';
+  } else if (!title) {
+    const lines = text.split('\n');
+    const first = lines.findIndex((l) => l.trim());
+    title = lines[first]?.trim() || 'Untitled';
+    preview = lines.slice(first + 1).join('\n').trim();
+  }
   return `<div class="card item" role="button" tabindex="0" data-action="copy-item" data-id="${esc(item.id)}">
     <div class="item-head">
       <div class="item-title">${highlight(title, terms)}</div>
       <a class="mini" href="#/saved/${esc(item.id)}">Edit</a>
     </div>
     ${preview ? `<div class="item-text">${highlight(preview, terms)}</div>` : ''}
-    <div class="item-foot">${item.pinned ? '' : `<span>${esc(whenLabel(item.createdAt))}</span>`}<span class="copy-hint">${ICON.copy}<span>Tap to copy</span></span></div>
+    <div class="item-foot">${when ? `<span>${esc(when)}</span>` : ''}<span class="copy-hint">${ICON.copy}<span>Tap to copy</span></span></div>
   </div>`;
 }
 
