@@ -1,6 +1,6 @@
 // Turns a driving instructor's spoken notes into a professional lesson breakdown,
-// either by asking ChatGPT directly (with the user's own OpenAI API key) or by building
-// a prompt to paste into the Claude / ChatGPT app.
+// either by asking an AI directly (Google Gemini on its free tier, or ChatGPT with the
+// user's own OpenAI key) or by building a prompt to paste into the Claude / ChatGPT app.
 
 export const DEFAULT_MODEL = 'gpt-5.6-luna';
 const FALLBACK_MODEL = 'gpt-4o-mini';
@@ -136,6 +136,93 @@ export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, 
     clearTimeout(timer);
   }
 }
+
+// ---------- Google Gemini, free tier ----------
+
+// Best free model first. Each model has its own free daily allowance, so when one is used
+// up (429), busy (5xx) or retired (404), the next one usually still works.
+export const GEMINI_MODELS = ['gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.5-flash-lite'];
+const GEMINI_API = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_BLOCKED = "Gemini wouldn't write this one. Try rewording it, or use Copy for ChatGPT.";
+
+function geminiProblem(status, data) {
+  const e = data?.error || {};
+  const detail = `${e.status || ''} ${e.message || ''} ${JSON.stringify(e.details || '')}`;
+  if (/API_KEY_INVALID|API key not valid|API key expired/i.test(detail)) return "Google didn't accept your Gemini key. Check it in Settings.";
+  if (/location is not supported|not available in your country/i.test(detail)) return "Gemini's free tier isn't available where you are.";
+  if (status === 403) return "That key isn't allowed to use Gemini. Create a new one at aistudio.google.com/apikey.";
+  if (status === 429) return "You've reached Google's free limit for now. Wait a minute and try again, or use Copy for ChatGPT.";
+  if (status >= 500) return 'Gemini is busy right now. Try again in a moment.';
+  return e.message || `Gemini returned an error (${status}).`;
+}
+
+export async function writeWithGemini({ apiKey, system, user }) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  let problem = null;
+  try {
+    for (const model of GEMINI_MODELS) {
+      let lowThinking = true;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const body = {
+          systemInstruction: { parts: [{ text: system }] },
+          contents: [{ role: 'user', parts: [{ text: user }] }],
+        };
+        // Rewriting notes doesn't need deep thought; low keeps answers quick.
+        if (lowThinking) body.generationConfig = { thinkingConfig: { thinkingLevel: 'low' } };
+        const res = await fetch(`${GEMINI_API}/${model}:generateContent`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+        const data = await res.json().catch(() => null);
+        if (res.ok) {
+          if (data?.promptFeedback?.blockReason) throw new FriendlyError(GEMINI_BLOCKED);
+          const candidate = data?.candidates?.[0];
+          const text = (candidate?.content?.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('').trim();
+          if (text) return text;
+          if (candidate?.finishReason === 'SAFETY') throw new FriendlyError(GEMINI_BLOCKED);
+          problem = 'Gemini sent back an empty answer. Try again.';
+          break;
+        }
+        // A model that doesn't take the thinking setting: ask again without it.
+        if (res.status === 400 && lowThinking && /thinking/i.test(data?.error?.message || '')) {
+          lowThinking = false;
+          continue;
+        }
+        problem = geminiProblem(res.status, data);
+        // A bad key or blocked account won't be fixed by trying another model.
+        if (res.status === 400 || res.status === 401 || res.status === 403) throw new FriendlyError(problem);
+        break;
+      }
+    }
+    throw new FriendlyError(problem || "Gemini couldn't write the breakdown. Try again.");
+  } catch (err) {
+    if (err instanceof FriendlyError) throw err;
+    if (err?.name === 'AbortError') throw new Error('Gemini took too long. Try again.');
+    throw new Error('No connection to Gemini. Try again when you have signal, or use Copy for ChatGPT.');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Free check that the key works (looking up a model doesn't use any of the free allowance).
+export async function checkGeminiKey(apiKey) {
+  for (const model of GEMINI_MODELS) {
+    let res;
+    try {
+      res = await fetch(`${GEMINI_API}/${model}`, { headers: { 'x-goog-api-key': apiKey } });
+    } catch {
+      return { ok: false, message: 'No connection. Check your signal and try again.' };
+    }
+    if (res.ok) return { ok: true };
+    if (res.status !== 404) return { ok: false, message: geminiProblem(res.status, await res.json().catch(() => null)) };
+  }
+  return { ok: false, message: "Google didn't recognise any of the free Gemini models. Try again later." };
+}
+
+// ---------- key check for ChatGPT ----------
 
 // Free check that the key works and can use the model (listing a model costs nothing).
 export async function checkKey(apiKey, model = DEFAULT_MODEL) {

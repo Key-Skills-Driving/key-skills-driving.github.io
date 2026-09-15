@@ -2,10 +2,10 @@
 
 A home-screen app for driving instructors at Key Skills Driving School. Talk through what happened in a lesson and get a professional lesson breakdown (covered today / how it went / focus for next lesson) that's one tap to copy and send.
 
-- **Break down:** dictate with the iPhone keyboard mic, then tap **Break it down**. With an OpenAI API key (Settings) ChatGPT writes it right in the app, at about a tenth of a cent per breakdown. Without a key, it copies a ready-made prompt to paste into the ChatGPT or Claude app.
+- **Break down:** dictate with the iPhone keyboard mic, then tap **Break it down**. With a free Google Gemini key (Settings) it's written right in the app at no cost: Gemini 3.8 Flash on the free tier, falling back to other free Gemini models when one's daily allowance runs out. An OpenAI key works too but is paid. Without a key, it copies a ready-made prompt to paste into the ChatGPT or Claude app.
 - **Saved:** every breakdown is saved automatically, plus prewritten ones you add. Tap any of them to copy it.
 - **Review:** the school's "Please leave a review" card with a scannable QR code, and a Send button.
-- **Private:** everything stays on the phone (IndexedDB). The API key never leaves the phone except to call OpenAI, and isn't included in backups.
+- **Private:** everything stays on the phone (IndexedDB). API keys only leave the phone to call Google or OpenAI, and aren't included in backups. On Gemini's free tier Google may use what's sent to improve its products, so the app suggests first names only.
 
 ## Install on iPhone
 

@@ -363,9 +363,10 @@ textarea.big { min-height: 170px; }
 .settings .steps li { margin: 6px 0; }
 .settings a { font-weight: 600; }
 .ok-line { color: var(--good); font-weight: 600; }
-.advanced { margin-top: 14px; }
-.advanced summary { color: var(--ink-3); font-size: 14px; font-weight: 700; cursor: pointer; }
-.advanced .field { margin-top: 10px; }
+.advanced-card { margin-bottom: 14px; }
+.advanced-card summary { color: var(--ink-2); font-size: 16px; font-weight: 700; cursor: pointer; }
+.advanced-card[open] summary { margin-bottom: 12px; }
+.model-field { margin-top: 16px; }
 
 /* ---------- review card (always light, so it scans well) ---------- */
 

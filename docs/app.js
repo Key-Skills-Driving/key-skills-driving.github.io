@@ -1,11 +1,12 @@
 import { db } from './db.js';
 import {
-  DEFAULT_MODEL, systemPrompt, userMessage, copyPrompt, looksLikeOurPrompt, cleanReply, writeWithChatGPT, checkKey,
+  DEFAULT_MODEL, systemPrompt, userMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
+  writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey,
 } from './ai.js';
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -19,7 +20,8 @@ const REVIEW_DEFAULTS = {
 
 const state = {
   items: new Map(), // saved breakdowns: the ones you write up, plus prewritten ones
-  settings: { lastBackup: null, apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS },
+  // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
+  settings: { lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS },
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
   busy: false,
   editingResult: false,
@@ -228,11 +230,20 @@ function renderWrite() {
   $$('textarea', app).forEach(autosize);
 }
 
+// Free Gemini wins whenever it's set up; ChatGPT is only used if it's the one key there.
+function aiProvider() {
+  if (state.settings.geminiKey) return 'gemini';
+  if (state.settings.apiKey) return 'chatgpt';
+  return null;
+}
+
 function writeActions() {
-  if (state.settings.apiKey) {
+  const provider = aiProvider();
+  if (provider) {
     return `<button class="btn btn-primary btn-block btn-tall" data-action="generate"${state.busy ? ' disabled' : ''}>
       ${state.busy ? '<span class="spinner" aria-hidden="true"></span> Writing the breakdown…' : `${ICON.zap} Break it down`}
-    </button>`;
+    </button>
+    <p class="hint center">${provider === 'gemini' ? 'Free, with Google Gemini' : 'Using ChatGPT (paid)'}</p>`;
   }
   return `<div class="two">
       <button class="btn btn-primary" data-action="copy-ai" data-ai="chatgpt">Copy for ChatGPT</button>
@@ -244,7 +255,7 @@ function writeActions() {
       <textarea id="f-paste" rows="3" placeholder="Press and hold here, then tap Paste"></textarea>
       <button class="btn btn-block" data-action="use-paste">Use this reply</button>
     </div>
-    <p class="hint center"><a href="#/settings">Set up ChatGPT</a> to do this in one tap.</p>`;
+    <p class="hint center"><a href="#/settings">Turn on free one-tap AI</a> to skip the copying and pasting.</p>`;
 }
 
 function resultCard() {
@@ -302,13 +313,13 @@ async function generate() {
   if (state.busy || needRaw()) return;
   state.busy = true;
   refreshWrite();
+  const { geminiKey, apiKey, model, extra } = state.settings;
+  const system = systemPrompt(extra);
+  const user = userMessage({ dateLabel: longDate(), raw: state.draft.raw });
   try {
-    const text = await writeWithChatGPT({
-      apiKey: state.settings.apiKey,
-      model: state.settings.model || DEFAULT_MODEL,
-      system: systemPrompt(state.settings.extra),
-      user: userMessage({ dateLabel: longDate(), raw: state.draft.raw }),
-    });
+    const text = aiProvider() === 'gemini'
+      ? await writeWithGemini({ apiKey: geminiKey, system, user })
+      : await writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
     state.busy = false;
     await setResult(cleanReply(text));
     toast('Done. Tap Copy to paste it anywhere.');
@@ -622,28 +633,43 @@ function renderSettings() {
     ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
     <main class="view settings">
       <section class="card">
-        <h2>One-tap ChatGPT</h2>
-        ${st.apiKey
-          ? `<p class="ok-line">Connected (key ${esc(maskKey(st.apiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app.</p>
-             <button class="btn btn-block" data-action="remove-key">Remove key</button>`
-          : `<p>Lets <strong>Break it down</strong> write the breakdown right in the app, without copying and pasting.</p>
-             <p class="fine">This uses OpenAI's API, which is billed separately from a ChatGPT subscription. It costs about a tenth of a cent per breakdown, so $5 of credit lasts a very long time.</p>
+        <h2>Free one-tap AI</h2>
+        ${st.geminiKey
+          ? `<p class="ok-line">Connected to Google Gemini (key ${esc(maskKey(st.geminiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app, free.</p>
+             <button class="btn btn-block" data-action="remove-gemini-key">Remove key</button>`
+          : `<p>Lets <strong>Break it down</strong> write the breakdown right in the app, free, using Google's Gemini.</p>
              <ol class="steps">
-               <li>Go to <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener">platform.openai.com</a> and sign in (your ChatGPT login works). Add $5 of credit.</li>
+               <li>Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with your Google account.</li>
+               <li>Tap <strong>Create API key</strong> and copy it. Accept Google's terms if it asks.</li>
+               <li>Paste it here.</li>
+             </ol>
+             <label class="field"><span class="label">Gemini API key</span>
+               <input id="st-gemini-key" type="password" placeholder="AIza…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+             <button class="btn btn-primary btn-block" data-action="save-gemini-key">Save key</button>`}
+        <p class="fine"><strong>Why it's free:</strong> you never give Google a card, so it can't charge you. If you ever hit the free daily limit, it just asks you to wait. Don't turn on billing in AI Studio.</p>
+        <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Use first names only.</p>
+        <p class="fine">The key stays on this phone and isn't included in backups.</p>
+      </section>
+
+      <details class="card advanced-card">
+        <summary>Use ChatGPT instead (costs a little)</summary>
+        ${st.geminiKey ? '<p class="fine">Gemini is set up, so it\'s used instead. Remove the Gemini key to use ChatGPT.</p>' : ''}
+        ${st.apiKey
+          ? `<p class="ok-line">ChatGPT key saved (${esc(maskKey(st.apiKey))}).</p>
+             <button class="btn btn-block" data-action="remove-key">Remove ChatGPT key</button>`
+          : `<p class="fine">Uses OpenAI's API, which is billed separately from a ChatGPT subscription: about a tenth of a cent per breakdown, with a $5 minimum top-up.</p>
+             <ol class="steps">
+               <li>Go to <a href="https://platform.openai.com/settings/organization/billing/overview" target="_blank" rel="noopener">platform.openai.com</a>, sign in, and add $5 of credit with auto-recharge off.</li>
                <li>Open <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener">API keys</a>, tap <strong>Create new secret key</strong>, and copy it.</li>
                <li>Paste it here.</li>
              </ol>
              <label class="field"><span class="label">OpenAI API key</span>
                <input id="st-key" type="password" placeholder="sk-…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-             <button class="btn btn-primary btn-block" data-action="save-key">Save key</button>
-             <p class="fine">The key stays on this phone. It isn't included in backups.</p>`}
-        <details class="advanced">
-          <summary>Advanced</summary>
-          <label class="field"><span class="label">ChatGPT model</span>
-            <input id="st-model" value="${esc(st.model || DEFAULT_MODEL)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-          <button class="btn btn-block" data-action="save-model">Save model</button>
-        </details>
-      </section>
+             <button class="btn btn-block" data-action="save-key">Save ChatGPT key</button>`}
+        <label class="field model-field"><span class="label">ChatGPT model</span>
+          <input id="st-model" value="${esc(st.model || DEFAULT_MODEL)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <button class="btn btn-block" data-action="save-model">Save model</button>
+      </details>
 
       <section class="card">
         <h2>How it writes</h2>
@@ -678,31 +704,33 @@ function renderSettings() {
   $$('textarea', app).forEach(autosize);
 }
 
-async function saveKey(button) {
-  const key = $('#st-key').value.trim();
+// Checks a pasted key before keeping it, so a typo shows up now rather than after a lesson.
+async function storeKey(button, { input, setting, check, success }) {
+  const key = $(input).value.trim();
   if (!key) {
-    toast('Paste your OpenAI API key first');
-    $('#st-key').focus();
+    toast('Paste the key first');
+    $(input).focus();
     return;
   }
+  const label = button.textContent;
   button.disabled = true;
   button.textContent = 'Checking…';
-  const result = await checkKey(key, state.settings.model || DEFAULT_MODEL);
+  const result = await check(key);
   if (!result.ok) {
     button.disabled = false;
-    button.textContent = 'Save key';
+    button.textContent = label;
     toast(result.message);
     return;
   }
-  state.settings.apiKey = key;
+  state.settings[setting] = key;
   saveSettings();
-  toast(result.note || 'Connected to ChatGPT');
+  toast(result.note || success);
   render();
 }
 
-function removeKey() {
-  if (!confirm('Remove your OpenAI key from this phone? You can still use Copy for ChatGPT.')) return;
-  state.settings.apiKey = '';
+function forgetKey(setting, question) {
+  if (!confirm(question)) return;
+  state.settings[setting] = '';
   saveSettings();
   toast('Key removed');
   render();
@@ -822,8 +850,14 @@ const actions = {
   'delete-item': (el) => deleteItem(el.dataset.id),
   'share-review': () => shareReview(),
   'copy-review': async () => toast((await copyText(state.settings.reviewUrl)) ? 'Review link copied' : "Couldn't copy"),
-  'save-key': (el) => saveKey(el),
-  'remove-key': () => removeKey(),
+  'save-gemini-key': (el) => storeKey(el, {
+    input: '#st-gemini-key', setting: 'geminiKey', check: checkGeminiKey, success: 'Connected to Gemini. Break it down is free now.',
+  }),
+  'remove-gemini-key': () => forgetKey('geminiKey', 'Remove your Gemini key from this phone? You can still use Copy for ChatGPT.'),
+  'save-key': (el) => storeKey(el, {
+    input: '#st-key', setting: 'apiKey', check: (key) => checkKey(key, state.settings.model || DEFAULT_MODEL), success: 'ChatGPT key saved',
+  }),
+  'remove-key': () => forgetKey('apiKey', 'Remove your OpenAI key from this phone?'),
   'save-model': () => saveModel(),
   'save-extra': () => saveExtra(),
   'save-review-settings': () => saveReviewSettings(),
