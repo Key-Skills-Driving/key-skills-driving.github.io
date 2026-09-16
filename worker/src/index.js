@@ -7,6 +7,7 @@
 // Each phone makes up an id and a secret token the first time it asks to join; this server keeps
 // only a hash of the token. The first phone to claim admin becomes the admin, and after that only
 // admins can approve, remove or promote phones.
+import { buildPushPayload } from '@block65/webcrypto-web-push';
 import { systemPrompt, userMessage, modifyMessage, normalizeStyle, writeWithGemini, checkGeminiKey } from '../../docs/ai.js';
 
 const APP_ORIGINS = new Set(['https://key-skills-driving.github.io', 'http://localhost:5173']);
@@ -22,7 +23,7 @@ class Refusal extends Error {
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin') || '';
     const cors = APP_ORIGINS.has(origin) ? { 'Access-Control-Allow-Origin': origin, Vary: 'Origin' } : {};
     if (request.method === 'OPTIONS') {
@@ -33,7 +34,7 @@ export default {
     }
     try {
       if (!APP_ORIGINS.has(origin)) throw new Refusal(403, 'This server only works from the KSDS Lessons app.');
-      const body = await handle(request, env);
+      const body = await handle(request, env, ctx);
       return reply(body, 200, cors);
     } catch (err) {
       if (err instanceof Refusal) return reply({ error: err.message }, err.status, cors);
@@ -47,7 +48,7 @@ function reply(body, status, headers) {
   return new Response(JSON.stringify(body), { status, headers: { ...headers, 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
 }
 
-async function handle(request, env) {
+async function handle(request, env, ctx) {
   const { pathname } = new URL(request.url);
   const route = `${request.method} ${pathname}`;
   const phone = await identify(request, env);
@@ -55,7 +56,8 @@ async function handle(request, env) {
 
   switch (route) {
     case 'GET /me': return me(phone, env);
-    case 'POST /join': return join(phone, input, env);
+    case 'POST /join': return join(phone, input, env, ctx);
+    case 'POST /admin/push': await requireAdmin(phone); return setPush(env, phone, input.subscription);
     case 'POST /breakdown': {
       await allowWriting(phone, env);
       const raw = text(input.raw, MAX.raw, 'notes');
@@ -116,10 +118,10 @@ async function adminExists(env) {
 
 async function me(phone, env) {
   const r = phone.row;
-  return { status: r?.status || 'none', name: r?.name || '', admin: !!(r?.admin && r.status === 'approved'), adminExists: await adminExists(env) };
+  return { status: r?.status || 'none', name: r?.name || '', admin: !!(r?.admin && r.status === 'approved'), adminExists: await adminExists(env), push: !!r?.push };
 }
 
-async function join(phone, input, env) {
+async function join(phone, input, env, ctx) {
   const name = text(input.name, MAX.name, 'first name');
   const now = Date.now();
   const r = phone.row;
@@ -131,7 +133,44 @@ async function join(phone, input, env) {
   } else {
     await env.DB.prepare("UPDATE phones SET name = ?, status = 'pending', created_at = ? WHERE id = ?").bind(name, now, phone.id).run();
   }
+  ctx.waitUntil(notifyAdmins(env, name)); // after the reply goes out, so a slow push never delays the join
   return { status: 'pending', name, admin: false, adminExists: await adminExists(env) };
+}
+
+// ---------- notifications to admins ----------
+
+async function setPush(env, phone, subscription) {
+  let value = null;
+  if (subscription) {
+    const s = subscription;
+    const ok = typeof s?.endpoint === 'string' && s.endpoint.startsWith('https://') && typeof s.keys?.p256dh === 'string' && typeof s.keys?.auth === 'string';
+    if (!ok) throw new Refusal(400, "That notification setup didn't look right. Try turning it on again.");
+    value = JSON.stringify({ endpoint: s.endpoint, expirationTime: null, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth } });
+    if (value.length > 2000) throw new Refusal(413, 'That notification setup is too long.');
+  }
+  await env.DB.prepare('UPDATE phones SET push = ? WHERE id = ?').bind(value, phone.id).run();
+  return { push: !!value };
+}
+
+// Tells every admin who turned notifications on. A failure here must never break the join.
+async function notifyAdmins(env, name) {
+  if (!env.VAPID_PRIVATE_KEY || !env.VAPID_PUBLIC_KEY) return;
+  const { results } = await env.DB.prepare("SELECT id, push FROM phones WHERE admin = 1 AND status = 'approved' AND push IS NOT NULL").all();
+  const vapid = { subject: env.VAPID_SUBJECT || 'https://key-skills-driving.github.io/', publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY };
+  const message = {
+    data: JSON.stringify({ title: 'KSDS Lessons', body: `${name} asked to join. Tap to approve.`, url: './#/phones', tag: 'join-request' }),
+    options: { ttl: 86400 },
+  };
+  await Promise.all(results.map(async (row) => {
+    try {
+      const sub = JSON.parse(row.push);
+      const res = await fetch(sub.endpoint, await buildPushPayload(message, sub, vapid));
+      // 404 or 410 means the phone let the subscription go; forget it rather than keep trying.
+      if (res.status === 404 || res.status === 410) await env.DB.prepare('UPDATE phones SET push = NULL WHERE id = ?').bind(row.id).run();
+    } catch (err) {
+      console.error('push failed:', err?.message || err);
+    }
+  }));
 }
 
 async function allowWriting(phone, env) {

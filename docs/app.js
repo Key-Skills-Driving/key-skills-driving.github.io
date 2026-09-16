@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.4.2';
+const VERSION = '3.5.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -32,7 +32,9 @@ const findKey = (text) => text.match(GEMINI_KEY)?.[0].replace(/\.+$/, '') || '';
 const SCHOOL_API = location.hostname === 'localhost' ? 'http://localhost:8787' : 'https://ksds-lessons.ksds-lessons-worker.workers.dev';
 // This phone's identity on the school server: made up on this phone, approved by an admin once.
 // status: none | pending | approved | removed. adminExists is null until the server's been asked.
-const defaultDevice = () => ({ id: '', token: '', status: 'none', name: '', admin: false, adminExists: null });
+const defaultDevice = () => ({ id: '', token: '', status: 'none', name: '', admin: false, adminExists: null, push: false, pushEndpoint: '' });
+// Public half of the school server's notification signing key (the private half lives on the server).
+const VAPID_PUBLIC_KEY = 'BGtbayMvDc_DHKp20vPVqWRE64MFyZ0uPp7NOvhMYcrA1Anga8AqZSST2tMsBWoamqHDOEuQoMWOn9MTq9DGMX0';
 
 const state = {
   items: new Map(), // saved breakdowns: the ones you write up, plus prewritten ones
@@ -221,6 +223,7 @@ function applyMe(me) {
   Object.assign(state.device, {
     status: me.status || 'none', name: me.name || state.device.name, admin: !!me.admin, adminExists: me.adminExists ?? state.device.adminExists,
   });
+  if (typeof me.push === 'boolean') state.device.push = me.push;
   saveDevice();
 }
 
@@ -236,6 +239,7 @@ async function syncSchool({ force = false } = {}) {
     if (state.device.admin) {
       state.phones = await school('/admin/phones');
       state.pendingCount = state.phones.phones.filter((p) => p.status === 'pending').length;
+      if (state.device.push) resyncPush();
     }
   } catch {
     return; // offline or server down: keep what we knew
@@ -370,6 +374,40 @@ const PLUS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><r
 const DOTS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="2" fill="currentColor" stroke="none"/></svg>';
 const VDOTS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="2" fill="currentColor" stroke="none"/></svg>';
 
+// Where the Share button lives differs by browser, and Safari's own layout varies by
+// version and setting, so the words stay general and the animation shows the icon to look for.
+function shareHint() {
+  const ua = navigator.userAgent;
+  if (/CriOS/.test(ua)) return "In Chrome it's in the address bar.";
+  if (/FxiOS/.test(ua)) return "In Firefox it's behind the ••• button at the bottom.";
+  if (/EdgiOS/.test(ua)) return "In Edge it's behind the ··· button at the bottom.";
+  return "In Safari it's in the bar at the bottom of the screen. If you see ••• there instead, tap that first.";
+}
+
+// A looping animation of the three taps, drawn in CSS: Share, Add to Home Screen, Add.
+function installDemo(kind) {
+  const android = kind === 'android';
+  const trigger = android ? VDOTS_GLYPH : SHARE_GLYPH;
+  const row = android ? 'Add to Home screen' : 'Add to Home Screen';
+  const last = android ? 'Install' : 'Add';
+  return `<div class="demo${android ? ' demo-android' : ''}" aria-hidden="true">
+    <div class="demo-phone"><div class="demo-screen">
+      <div class="demo-page"><i></i><i></i><i></i><i></i></div>
+      <div class="demo-sheet">
+        <div class="demo-row">${android ? 'New tab' : 'Copy'}</div>
+        <div class="demo-row">${android ? 'Bookmarks' : 'Add to Reading List'}</div>
+        <div class="demo-row hit">${row} ${PLUS_GLYPH}</div>
+        <div class="demo-row">${android ? 'Desktop site' : 'Print'}</div>
+      </div>
+      <div class="demo-add"><span>Cancel</span><b>${row}</b><span class="hit">${last}</span></div>
+      <div class="demo-home"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><span class="demo-icon"><img src="icons/icon-192.png" alt=""><b>KSDS Lessons</b></span></div>
+      <div class="demo-bar"><span class="demo-trigger">${trigger}</span></div>
+      <div class="demo-tap"></div>
+    </div></div>
+    <div class="demo-caption"><span>1 · Tap ${android ? 'the menu' : 'Share'}</span><span>2 · Tap ${row}</span><span>3 · Tap ${last}</span><span>Then open it from your Home Screen</span></div>
+  </div>`;
+}
+
 function installScreen() {
   const ios = platform() === 'ios';
   const icon = '<img class="install-icon" src="icons/icon-192.png" width="72" height="72" alt="">';
@@ -383,14 +421,14 @@ function installScreen() {
     body = `${icon}
       <h2>Add this app to your Home Screen</h2>
       <p>Three taps, then it opens like any other app.</p>
+      ${installDemo('ios')}
       <ol class="install-steps">
-        <li><span class="num">1</span><div><strong>Tap Share</strong> in the bar at the bottom of the screen.<span class="fine">It's the square with an arrow. If you see ${DOTS_GLYPH} instead, tap that first, then <strong>Share</strong>.</span></div><span class="key">${SHARE_GLYPH}</span></li>
-        <li><span class="num">2</span><div><strong>Tap Add to Home Screen.</strong><span class="fine">It's in the list. Scroll up a little if you don't see it.</span>
-          <div class="sheet-demo"><div>Copy</div><div>Add to Reading List</div><div class="hit">Add to Home Screen ${PLUS_GLYPH}</div><div>Print</div></div></div></li>
+        <li><span class="num">1</span><div><strong>Tap Share</strong>, the square with an arrow.<span class="fine">${shareHint()}</span></div><span class="key">${SHARE_GLYPH}</span></li>
+        <li><span class="num">2</span><div><strong>Tap Add to Home Screen.</strong><span class="fine">It's in the list. Scroll up a little if you don't see it.</span></div><span class="key">${PLUS_GLYPH}</span></li>
         <li><span class="num">3</span><div><strong>Tap Add</strong>, top right. Then open the new <strong>KSDS Lessons</strong> icon.</div></li>
       </ol>
-      <button class="link-btn" data-action="dismiss-install">Not now, keep using it in Safari</button>
-      <p class="fine center">Anything you set up here in Safari stays in Safari and won't carry over.</p>`;
+      <button class="link-btn" data-action="dismiss-install">Not now, keep using it in the browser</button>
+      <p class="fine center">Anything you set up here in the browser stays in the browser and won't carry over.</p>`;
   } else if (state.installPrompt) {
     body = `${icon}
       <h2>Install this app</h2>
@@ -401,6 +439,7 @@ function installScreen() {
     body = `${icon}
       <h2>Add this app to your Home Screen</h2>
       <p>Two taps, then it opens like any other app.</p>
+      ${installDemo('android')}
       <ol class="install-steps">
         <li><span class="num">1</span><div><strong>Tap the menu</strong> at the top right of the browser.</div><span class="key">${VDOTS_GLYPH}</span></li>
         <li><span class="num">2</span><div><strong>Tap Add to Home screen</strong> (or <strong>Install app</strong>), then <strong>Install</strong>.<span class="fine">Samsung's browser: tap the ≡ menu, then <strong>Add page to</strong>, then <strong>Home screen</strong>.</span></div></li>
@@ -408,12 +447,8 @@ function installScreen() {
       <p class="fine">Don't see either? Tap the menu and choose <strong>Open in Chrome</strong> first, then try again.</p>
       <button class="link-btn" data-action="dismiss-install">Not now</button>`;
   }
-  const arrow = ios && !state.justInstalled
-    ? '<div class="install-arrow" aria-hidden="true"><span>Share is down here</span><svg viewBox="0 0 24 24"><path d="M12 3v17M5 13l7 7 7-7"/></svg></div>'
-    : '';
   return `${header({ title: 'KSDS Lessons' })}
-    <main class="view install"><section class="card install-card">${body}</section></main>
-    ${arrow}`;
+    <main class="view install"><section class="card install-card">${body}</section></main>`;
 }
 
 async function installApp() {
@@ -443,6 +478,7 @@ function setupCard() {
       <h2>Waiting for approval</h2>
       <p>You asked to join as <strong>${esc(d.name)}</strong>. As soon as your admin approves this phone, <strong>Break it down</strong> writes breakdowns for you. You only do this once.</p>
       <button class="btn btn-primary btn-block" data-action="check-approval">Check again</button>
+      <a class="btn btn-block" href="${esc(adminTextLink(d.name))}">Text your admin</a>
     </section>`;
   }
   if (state.settings.setupDismissed) return '';
@@ -1277,12 +1313,89 @@ function schoolSection() {
   }[d.status] || '';
   let actions = '';
   if (d.admin) {
-    actions = `<a class="btn btn-primary btn-block" href="#/phones">Manage phones${state.pendingCount ? ` (${state.pendingCount} waiting)` : ''}</a>`;
+    actions = `<a class="btn btn-primary btn-block" href="#/phones">Manage phones${state.pendingCount ? ` (${state.pendingCount} waiting)` : ''}</a>${pushControls()}`;
   } else if (d.adminExists === false) {
     actions = `<p class="fine">Nobody manages this school's phones yet. If that's your job, tap below on your own phone. The first phone to do it becomes the admin, and the button disappears for everyone else.</p>
       <button class="btn btn-block" data-action="claim-admin">Become the admin</button>`;
   }
   return `<section class="card"><h2>School AI</h2><p>${line}</p>${actions}</section>`;
+}
+
+// Opens Messages with the request typed out; the instructor picks who to send it to.
+function adminTextLink(name) {
+  const body = encodeURIComponent(`I asked to join KSDS Lessons as ${name}. Can you approve my phone?`);
+  return platform() === 'ios' ? `sms:&body=${body}` : `sms:?body=${body}`;
+}
+
+// ---------- notifications for admins ----------
+
+const pushSupported = () => 'PushManager' in window && 'Notification' in window && 'serviceWorker' in navigator;
+
+function pushControls() {
+  if (!pushSupported()) return '<p class="fine">This phone can\'t show notifications from the app.</p>';
+  if (!isInstalled()) return '<p class="fine">To get a notification when someone asks to join, use the app from your Home Screen. Notifications don\'t work in a browser tab.</p>';
+  if (Notification.permission === 'denied') return '<p class="fine">Notifications are blocked for this app. Turn them on in your phone\'s Settings › Notifications › KSDS Lessons, then come back here.</p>';
+  return state.device.push
+    ? '<p class="ok-line">You\'ll get a notification when someone asks to join.</p><button class="btn btn-block" data-action="push-off">Turn notifications off</button>'
+    : '<button class="btn btn-block" data-action="push-on">Notify me when someone asks to join</button>';
+}
+
+function keyBytes(base64url) {
+  const padded = base64url.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(base64url.length / 4) * 4, '=');
+  return Uint8Array.from(atob(padded), (c) => c.charCodeAt(0)).buffer;
+}
+
+async function enablePush(button) {
+  button.disabled = true;
+  button.textContent = 'Setting up…';
+  try {
+    if ((await Notification.requestPermission()) !== 'granted') {
+      toast("Notifications weren't allowed.");
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(VAPID_PUBLIC_KEY) });
+    await school('/admin/push', { subscription: sub.toJSON() });
+    state.device.push = true;
+    state.device.pushEndpoint = sub.endpoint;
+    saveDevice();
+    toast("You'll be notified when someone asks to join.");
+  } catch (err) {
+    toast(err.message || "Couldn't turn notifications on.");
+  } finally {
+    render();
+  }
+}
+
+async function disablePush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    await (await reg.pushManager.getSubscription())?.unsubscribe();
+    await school('/admin/push', { subscription: null });
+  } catch { /* turning off locally is what matters */ }
+  state.device.push = false;
+  state.device.pushEndpoint = '';
+  saveDevice();
+  toast('Notifications off');
+  render();
+}
+
+// Subscriptions can be renewed by the phone; keep the server's copy current.
+async function resyncPush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      state.device.push = false;
+      saveDevice();
+      return;
+    }
+    if (sub.endpoint !== state.device.pushEndpoint) {
+      await school('/admin/push', { subscription: sub.toJSON() });
+      state.device.pushEndpoint = sub.endpoint;
+      saveDevice();
+    }
+  } catch { /* try again next time */ }
 }
 
 async function claimAdmin(button) {
@@ -1712,6 +1825,8 @@ const actions = {
   join: (el) => joinSchool(el),
   'check-approval': (el) => checkApproval(el),
   'claim-admin': (el) => claimAdmin(el),
+  'push-on': (el) => enablePush(el),
+  'push-off': () => disablePush(),
   'approve-phone': (el) => phoneAction('/admin/approve', { id: el.dataset.id }, 'Approved. They can use it now.'),
   'remove-phone': (el) => {
     const pending = !!el.dataset.pending;

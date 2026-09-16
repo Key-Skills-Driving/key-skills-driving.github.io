@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS phones (
   approved_at INTEGER,
   last_seen INTEGER,
   day TEXT,
-  day_count INTEGER NOT NULL DEFAULT 0
+  day_count INTEGER NOT NULL DEFAULT 0,
+  push TEXT -- an admin's notification subscription (JSON), if they turned notifications on
 );
 
 -- The school's Gemini key, set by an admin from the app. Never sent back out.

@@ -1,1 +1,1 @@
-{"name":"ksds-lessons-worker","private":true,"type":"module","devDependencies":{"wrangler":"^4.132.0"}}
+{"name":"ksds-lessons-worker","private":true,"type":"module","devDependencies":{"wrangler":"^4.132.0"},"dependencies":{"@block65/webcrypto-web-push":"^2.0.0"}}

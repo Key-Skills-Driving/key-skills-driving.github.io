@@ -9,6 +9,12 @@ preview_urls = false
 [observability]
 enabled = false
 
+# Notifications to admins when someone asks to join. The matching private key is the
+# VAPID_PRIVATE_KEY secret (wrangler secret put), never in this file.
+[vars]
+VAPID_PUBLIC_KEY = "BGtbayMvDc_DHKp20vPVqWRE64MFyZ0uPp7NOvhMYcrA1Anga8AqZSST2tMsBWoamqHDOEuQoMWOn9MTq9DGMX0"
+VAPID_SUBJECT = "https://key-skills-driving.github.io/"
+
 [[d1_databases]]
 binding = "DB"
 database_name = "ksds-lessons"

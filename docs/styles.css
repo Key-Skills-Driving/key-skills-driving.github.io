@@ -305,44 +305,188 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 .sheet-demo div + div { border-top: 1px solid var(--line); }
 .sheet-demo .hit { color: var(--ink); font-weight: 700; background: var(--gold-soft); box-shadow: inset 0 0 0 2px var(--gold); }
 .sheet-demo .glyph { width: 18px; height: 18px; }
-/* Sits over the page just above Safari's bar, on a fade so it never collides with text behind it. */
-.install-arrow {
-  position: fixed;
+/* The animated three-tap demo. One 10-second loop; every part keys off the same timeline. */
+.demo { --cycle: 10s; display: grid; justify-items: center; gap: 10px; margin: 4px 0 18px; }
+.demo-phone {
+  width: 150px;
+  padding: 6px;
+  border-radius: 24px;
+  background: #0b1022;
+  box-shadow: 0 10px 26px rgba(13, 26, 66, 0.22), inset 0 0 0 1.5px #2a3558;
+}
+.demo-screen {
+  position: relative;
+  aspect-ratio: 9 / 18;
+  overflow: hidden;
+  border-radius: 18px;
+  background: #f4f6fa;
+  color: #111a2e;
+  font-size: 8px;
+  line-height: 1.2;
+}
+.demo-page { position: absolute; inset: 14px 12px auto; display: grid; gap: 7px; }
+.demo-page i { display: block; height: 7px; border-radius: 4px; background: #d6dce7; }
+.demo-page i:nth-child(2) { width: 70%; }
+.demo-page i:nth-child(4) { width: 55%; }
+.demo-bar {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  left: 6px;
+  display: flex;
+  justify-content: center;
+  height: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.demo-android .demo-bar { top: 6px; bottom: auto; justify-content: flex-end; padding-right: 4px; }
+.demo-trigger {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 12px;
+  color: #14285f;
+  animation: demoPulse var(--cycle) infinite;
+}
+.demo-trigger .glyph { width: 13px; height: 13px; }
+.demo-sheet {
+  position: absolute;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 5;
+  padding: 6px 6px 8px;
+  border-radius: 12px 12px 0 0;
+  background: #fff;
+  box-shadow: 0 -4px 14px rgba(0, 0, 0, 0.15);
+  transform: translateY(105%);
+  animation: demoSheet var(--cycle) infinite;
+}
+.demo-row { display: flex; align-items: center; justify-content: space-between; padding: 5px 6px; border-radius: 5px; color: #6e7890; }
+.demo-row .glyph { width: 9px; height: 9px; }
+.demo-row.hit { color: #111a2e; font-weight: 700; animation: demoRow var(--cycle) infinite; }
+.demo-add {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 8px;
+  background: #f4f6fa;
+  color: #0a84ff;
+  opacity: 0;
+  animation: demoAdd var(--cycle) infinite;
+}
+.demo-add b { color: #111a2e; }
+.demo-add .hit { font-weight: 700; padding: 0 3px; border-radius: 4px; animation: demoPulseSoft var(--cycle) infinite; }
+.demo-home {
+  position: absolute;
+  inset: 0;
   display: grid;
-  justify-items: center;
-  padding: 30px 0 calc(var(--safe-bottom) + 6px);
-  background: linear-gradient(to bottom, transparent, var(--bg) 45%);
-  color: var(--brand);
-  font-size: 14px;
-  font-weight: 800;
-  pointer-events: none;
+  grid-template-columns: repeat(4, 1fr);
+  align-content: start;
+  gap: 8px 6px;
+  padding: 14px 10px;
+  background: radial-gradient(120% 90% at 20% 10%, #3a5ba0 0%, #1d2f63 45%, #0e1633 100%);
+  opacity: 0;
+  animation: demoHome var(--cycle) infinite;
 }
-.install-arrow span {
-  padding: 5px 13px;
-  border-radius: 999px;
-  background: var(--surface);
-  box-shadow: 0 2px 10px rgba(17, 26, 46, 0.18);
+.demo-home i { display: block; aspect-ratio: 1; border-radius: 6px; background: rgba(255, 255, 255, 0.85); }
+.demo-icon { display: grid; justify-items: center; gap: 2px; transform: scale(0); animation: demoPop var(--cycle) infinite; }
+.demo-icon img { width: 100%; border-radius: 6px; }
+.demo-icon b { font-size: 5px; color: #fff; white-space: nowrap; }
+.demo-tap {
+  position: absolute;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(245, 180, 0, 0.55);
+  box-shadow: 0 0 0 2px rgba(245, 180, 0, 0.9);
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.4);
+  animation: demoTap var(--cycle) infinite;
 }
-.install-arrow svg {
-  width: 34px;
-  height: 34px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 3;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  animation: nudge 1.2s ease-in-out infinite;
+.demo-caption { position: relative; width: 100%; height: 22px; text-align: center; font-size: 14px; font-weight: 700; color: var(--brand); }
+.demo-caption span { position: absolute; inset: 0; opacity: 0; animation: demoCap var(--cycle) infinite; }
+.demo-caption span:nth-child(2) { animation-name: demoCap2; }
+.demo-caption span:nth-child(3) { animation-name: demoCap3; }
+.demo-caption span:nth-child(4) { animation-name: demoCap4; }
+
+@keyframes demoPulse {
+  0%, 4% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0.8); }
+  12% { box-shadow: 0 0 0 9px rgba(245, 180, 0, 0); }
+  13%, 16% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0.8); }
+  24% { box-shadow: 0 0 0 9px rgba(245, 180, 0, 0); }
+  25%, 100% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0); }
 }
-@keyframes nudge {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(7px); }
+@keyframes demoSheet {
+  0%, 26% { transform: translateY(105%); }
+  31%, 55% { transform: translateY(0); }
+  57%, 100% { transform: translateY(105%); }
 }
+@keyframes demoRow {
+  0%, 38% { background: transparent; box-shadow: none; }
+  42%, 55% { background: #fff1c7; box-shadow: inset 0 0 0 2px #f5b400; }
+  56%, 100% { background: transparent; box-shadow: none; }
+}
+@keyframes demoAdd {
+  0%, 55% { opacity: 0; }
+  58%, 77% { opacity: 1; }
+  80%, 100% { opacity: 0; }
+}
+@keyframes demoPulseSoft {
+  0%, 60% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0); }
+  63% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0.9); }
+  71% { box-shadow: 0 0 0 8px rgba(245, 180, 0, 0); }
+  72%, 100% { box-shadow: 0 0 0 0 rgba(245, 180, 0, 0); }
+}
+@keyframes demoHome {
+  0%, 79% { opacity: 0; }
+  83%, 100% { opacity: 1; }
+}
+@keyframes demoPop {
+  0%, 84% { transform: scale(0); }
+  90% { transform: scale(1.18); }
+  94%, 100% { transform: scale(1); }
+}
+@keyframes demoTap {
+  0%, 16% { opacity: 0; left: 50%; top: 92%; transform: translate(-50%, -50%) scale(0.4); }
+  18% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  23% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  24%, 46% { opacity: 0; left: 50%; top: 75%; transform: translate(-50%, -50%) scale(0.4); }
+  48% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  53% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  54%, 66% { opacity: 0; left: 86%; top: 8%; transform: translate(-50%, -50%) scale(0.4); }
+  68% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  73% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  74%, 100% { opacity: 0; }
+}
+.demo-android .demo-tap { animation-name: demoTapAndroid; }
+@keyframes demoTapAndroid {
+  0%, 16% { opacity: 0; left: 88%; top: 8%; transform: translate(-50%, -50%) scale(0.4); }
+  18% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  23% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  24%, 46% { opacity: 0; left: 50%; top: 75%; transform: translate(-50%, -50%) scale(0.4); }
+  48% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  53% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  54%, 66% { opacity: 0; left: 86%; top: 8%; transform: translate(-50%, -50%) scale(0.4); }
+  68% { opacity: 0.9; transform: translate(-50%, -50%) scale(0.6); }
+  73% { opacity: 0; transform: translate(-50%, -50%) scale(1.7); }
+  74%, 100% { opacity: 0; }
+}
+@keyframes demoCap { 0%, 2% { opacity: 0; } 4%, 24% { opacity: 1; } 27%, 100% { opacity: 0; } }
+@keyframes demoCap2 { 0%, 28% { opacity: 0; } 31%, 53% { opacity: 1; } 56%, 100% { opacity: 0; } }
+@keyframes demoCap3 { 0%, 57% { opacity: 0; } 60%, 76% { opacity: 1; } 79%, 100% { opacity: 0; } }
+@keyframes demoCap4 { 0%, 80% { opacity: 0; } 83%, 98% { opacity: 1; } 100% { opacity: 0; } }
+
+/* No motion: show the share sheet with the right row lit, and all the captions at once. */
 @media (prefers-reduced-motion: reduce) {
-  .install-arrow svg { animation: none; }
+  .demo * { animation: none !important; }
+  .demo-sheet { transform: none; }
+  .demo-row.hit { background: #fff1c7; box-shadow: inset 0 0 0 2px #f5b400; }
+  .demo-caption { height: auto; display: grid; gap: 2px; }
+  .demo-caption span { position: static; opacity: 1; }
+  .demo-caption span:nth-child(4) { display: none; }
 }
 
 /* ---------- break down tab ---------- */

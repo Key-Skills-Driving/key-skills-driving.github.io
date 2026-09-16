@@ -1,6 +1,6 @@
 // Keeps the app working with no signal. Bump CACHE (and VERSION in app.js) on every release
 // so phones pick up the new files.
-const CACHE = 'lesson-notes-3.4.2';
+const CACHE = 'lesson-notes-3.5.0';
 const ASSETS = [
   './',
   'index.html',
@@ -45,4 +45,34 @@ self.addEventListener('fetch', (event) => {
       return response;
     }).catch(() => (request.mode === 'navigate' ? caches.match('index.html') : Response.error()))),
   );
+});
+
+// Admins who turned notifications on get one when someone asks to join.
+self.addEventListener('push', (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    data = { body: event.data ? event.data.text() : '' };
+  }
+  event.waitUntil(self.registration.showNotification(data.title || 'KSDS Lessons', {
+    body: data.body || 'Someone asked to join.',
+    icon: 'icons/icon-192.png',
+    badge: 'icons/icon-192.png',
+    tag: data.tag || 'join-request', // a second request replaces the first instead of stacking up
+    data: { url: data.url || './#/phones' },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const target = new URL(event.notification.data?.url || './#/phones', self.registration.scope).href;
+  event.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    const open = list.find((c) => 'focus' in c);
+    if (open) {
+      open.navigate?.(target).catch(() => {});
+      return open.focus();
+    }
+    return self.clients.openWindow(target);
+  }));
 });
