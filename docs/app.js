@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.2.1';
+const VERSION = '3.2.2';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -42,6 +42,7 @@ const state = {
   pendingCount: 0, // phones waiting for an admin's approval (admins only)
   installPrompt: null, // Android's install prompt, held until the Install button is tapped
   justInstalled: false,
+  addingExample: false, // the paste-an-example box in Settings is open
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
   modify: null, // { id, change, result, busy }: asking the AI to change a saved breakdown
   busy: false,
@@ -1421,7 +1422,20 @@ function styleSection() {
   const chip = (key, value, label) => `<button type="button" class="chip${s[key] === value ? ' on' : ''}" data-action="style-pick" data-key="${key}" data-value="${value}">${label}</button>`;
   const examples = s.examples.length
     ? `<div class="style-examples">${s.examples.map((e, i) => `<div class="style-example"><span class="snip">${esc(e.text.split('\n').find((l) => l.trim()) || '')}</span><button class="mini" data-action="style-remove-example" data-index="${i}">Remove</button></div>`).join('')}</div>`
-    : '<p class="fine">None yet.</p>';
+    : '';
+  let adder;
+  if (state.addingExample) {
+    adder = `<label class="field"><span class="label">A breakdown you wrote yourself</span>
+        <textarea id="st-example" rows="6" placeholder="Paste or dictate one of your own write-ups here."></textarea></label>
+      <div class="two">
+        <button class="btn btn-primary" data-action="style-keep-example">Keep it</button>
+        <button class="btn" data-action="style-cancel-example">Cancel</button>
+      </div>`;
+  } else if (s.examples.length >= STYLE_LIMITS.examples) {
+    adder = `<p class="fine">That's the ${STYLE_LIMITS.examples} it uses. Remove one to add another.</p>`;
+  } else {
+    adder = '<button class="btn btn-block" data-action="style-add-example">Add an example</button>';
+  }
   return `<section class="card">
     <h2>My style</h2>
     <p class="fine">Breakdowns stay professional and in the same format. This makes them sound like you.</p>
@@ -1433,7 +1447,8 @@ function styleSection() {
       <input id="st-signoff" value="${esc(s.signoff)}" maxlength="${STYLE_LIMITS.signoff}" placeholder="e.g. Coach Eli, Key Skills Driving School" autocomplete="off"></label>
     <div class="style-row"><span class="label">Examples of my writing</span>
       ${examples}
-      <p class="fine">These only come from your own writing: whenever you fix a breakdown by hand (tap <strong>Edit</strong> under it, change it, then <strong>Done editing</strong>), the app offers to keep your version as an example. Your newest ${STYLE_LIMITS.examples} are used.</p>
+      ${adder}
+      <p class="fine">Paste up to ${STYLE_LIMITS.examples} breakdowns you wrote yourself, so it can match your voice. The app also offers to keep your version whenever you fix a breakdown by hand (<strong>Edit</strong>, change it, <strong>Done editing</strong>).</p>
     </div>
     ${s.examples.length ? `<div class="style-row"><span class="label">How closely to follow them</span>
       <div class="chips">${chip('polish', 'tidy', 'Tidy me up')}${chip('polish', 'close', 'Close to how I write')}</div></div>` : ''}
@@ -1674,6 +1689,30 @@ const actions = {
     saveSettings();
     $$('.chip', el.parentElement).forEach((c) => c.classList.toggle('on', c === el));
   },
+  'style-add-example': () => {
+    saveStyleText();
+    state.addingExample = true;
+    render();
+    $('#st-example')?.focus();
+  },
+  'style-cancel-example': () => {
+    saveStyleText();
+    state.addingExample = false;
+    render();
+  },
+  'style-keep-example': () => {
+    const text = ($('#st-example')?.value || '').trim();
+    if (!text) {
+      toast('Paste or type the example first');
+      $('#st-example')?.focus();
+      return;
+    }
+    saveStyleText();
+    addStyleExample(text);
+    state.addingExample = false;
+    render();
+    toast('Kept as a style example');
+  },
   'style-remove-example': (el) => {
     saveStyleText(); // don't lose what's typed in the boxes when the section redraws
     const index = Number(el.dataset.index);
@@ -1731,7 +1770,7 @@ document.addEventListener('change', (e) => {
 
 // Hide the tab bar while the keyboard is up so it doesn't float over what you're typing.
 const TYPING = 'textarea, select, input:not([type=checkbox]):not([type=file])';
-const DICTATION_BOXES = new Set(['raw', 'mod-change']);
+const DICTATION_BOXES = new Set(['raw', 'mod-change', 'st-example']);
 document.addEventListener('focusin', (e) => {
   if (e.target.matches?.(TYPING)) document.body.classList.add('typing');
   // Dictating is hands-off, so without this the screen can lock mid-sentence.
