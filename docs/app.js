@@ -2,11 +2,12 @@ import { db } from './db.js';
 import {
   DEFAULT_MODEL, systemPrompt, userMessage, modifyMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
   writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey, normalizeStyle, styleIsSet, STYLE_LIMITS, CANCELLED,
+  DEFAULT_CLAUDE_MODEL, writeWithClaude, checkClaudeKey,
 } from './ai.js';
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.6.0';
+const VERSION = '3.7.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -20,7 +21,9 @@ const REVIEW_DEFAULTS = {
 
 // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
 // style: how this instructor likes breakdowns written (tone, length, sign-off, examples of their writing).
-const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', style: normalizeStyle({}), ...REVIEW_DEFAULTS });
+const defaultSettings = () => ({
+  lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, claudeKey: '', claudeModel: DEFAULT_CLAUDE_MODEL, extra: '', style: normalizeStyle({}), ...REVIEW_DEFAULTS,
+});
 const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
 const APP_URL = new URL('./', location.href).href;
 // Google issues Gemini keys in two shapes: the older AIza… and the newer AQ.… ones.
@@ -570,10 +573,11 @@ function aiProvider() {
   if (state.settings.geminiKey) return 'gemini';
   if (state.device.status === 'approved') return 'school';
   if (state.settings.apiKey) return 'chatgpt';
+  if (state.settings.claudeKey) return 'claude';
   return null;
 }
 
-const PROVIDER_NOTE = { gemini: 'Free, with Google Gemini', school: 'Free, through Key Skills', chatgpt: 'Using ChatGPT (paid)' };
+const PROVIDER_NOTE = { gemini: 'Free, with Google Gemini', school: 'Free, through Key Skills', chatgpt: 'Using ChatGPT (paid)', claude: 'Using Claude (paid)' };
 
 // Writes a breakdown (or a modified one) with whichever AI this phone uses.
 // One AI request runs at a time. New lesson, Cancel or Done stops it, and a late answer from a
@@ -610,7 +614,7 @@ function cancelWriting() {
 }
 
 async function askAI({ raw, current, change, signal }) {
-  const { geminiKey, apiKey, model, extra, style } = state.settings;
+  const { geminiKey, apiKey, model, claudeKey, claudeModel, extra, style } = state.settings;
   const modifying = current !== undefined;
   if (aiProvider() === 'school') {
     try {
@@ -624,9 +628,11 @@ async function askAI({ raw, current, change, signal }) {
   }
   const system = systemPrompt(extra, style);
   const user = modifying ? modifyMessage({ raw, current, change }) : userMessage({ raw });
-  return aiProvider() === 'gemini'
-    ? writeWithGemini({ apiKey: geminiKey, system, user, signal })
-    : writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user, signal });
+  switch (aiProvider()) {
+    case 'gemini': return writeWithGemini({ apiKey: geminiKey, system, user, signal });
+    case 'claude': return writeWithClaude({ apiKey: claudeKey, model: claudeModel || DEFAULT_CLAUDE_MODEL, system, user, signal });
+    default: return writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user, signal });
+  }
 }
 
 function writeActions() {
@@ -1262,6 +1268,27 @@ function renderSettings() {
         <button class="btn btn-block" data-action="save-model">Save model</button>
       </details>
 
+      <details class="card advanced-card"${st.claudeKey ? ' open' : ''}>
+        <summary>Use Claude instead (costs a little)</summary>
+        ${st.geminiKey || st.apiKey ? '<p class="fine">Gemini or ChatGPT is set up, so that\'s used instead. Remove those keys to use Claude.</p>' : ''}
+        ${st.claudeKey
+          ? `<p class="ok-line">Claude key saved (${esc(maskKey(st.claudeKey))}).</p>
+             <button class="btn btn-block" data-action="remove-claude-key">Remove Claude key</button>`
+          : `<p class="fine">Uses Anthropic's API, which is billed separately from a Claude subscription: a cent or two per breakdown with the usual model, with a $5 minimum top-up.</p>
+             <ol class="steps">
+               <li>Go to <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noopener">console.anthropic.com</a>, sign in, and add $5 of credit with auto-reload off.</li>
+               <li>Open <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">API keys</a>, tap <strong>Create Key</strong>, and copy it.</li>
+               <li>Paste it here.</li>
+             </ol>
+             <label class="field"><span class="label">Anthropic API key</span>
+               <input id="st-claude-key" type="password" placeholder="sk-ant-…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+             <button class="btn btn-block" data-action="save-claude-key">Save Claude key</button>`}
+        <label class="field model-field"><span class="label">Claude model</span>
+          <input id="st-claude-model" value="${esc(st.claudeModel || DEFAULT_CLAUDE_MODEL)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
+        <p class="fine">claude-opus-5 writes best. claude-sonnet-5 costs about half as much, claude-haiku-4-5 about a fifth.</p>
+        <button class="btn btn-block" data-action="save-claude-model">Save model</button>
+      </details>
+
       ${styleSection()}
 
       <section class="card">
@@ -1291,7 +1318,7 @@ function renderSettings() {
           <li>This app can't see anything else on your phone: no contacts, photos, location or other apps. It doesn't ask for any permissions.</li>
           <li>Breakdowns, keys and settings are stored only on this phone. The only thing that leaves it is what you dictate, sent to Gemini when you tap <strong>Break it down</strong> (through the school's server if you joined).</li>
           <li>If you joined the school's AI, the school's server keeps your first name and when you last used the app, so an admin can approve or remove phones. It doesn't keep anything you dictate.</li>
-          <li>Your own AI key, if you add one, is only ever sent to Google or OpenAI, and isn't included in backups.</li>
+          <li>Your own AI key, if you add one, is only ever sent to Google, OpenAI or Anthropic, and isn't included in backups.</li>
           <li>Backup files contain your breakdowns in plain text, so keep them private.</li>
         </ul>
         <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key, settings and school approval. Nothing else on my phone is touched.</span></label>
@@ -1898,6 +1925,15 @@ const actions = {
     input: '#st-key', setting: 'apiKey', check: (key) => checkKey(key, state.settings.model || DEFAULT_MODEL), success: 'ChatGPT key saved',
   }),
   'remove-key': () => forgetKey('apiKey', 'Remove your OpenAI key from this phone?'),
+  'save-claude-key': (el) => storeKey(el, {
+    input: '#st-claude-key', setting: 'claudeKey', check: (key) => checkClaudeKey(key, state.settings.claudeModel || DEFAULT_CLAUDE_MODEL), success: 'Claude key saved',
+  }),
+  'remove-claude-key': () => forgetKey('claudeKey', 'Remove your Claude key from this phone?'),
+  'save-claude-model': () => {
+    state.settings.claudeModel = $('#st-claude-model').value.trim() || DEFAULT_CLAUDE_MODEL;
+    saveSettings();
+    toast('Model saved');
+  },
   'save-model': () => saveModel(),
   'save-style': () => {
     saveStyleText();

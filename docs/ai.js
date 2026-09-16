@@ -292,6 +292,95 @@ export async function writeWithGemini({ apiKey, system, user, signal }) {
   }
 }
 
+// ---------- Claude (Anthropic), with the instructor's own key ----------
+
+export const DEFAULT_CLAUDE_MODEL = 'claude-opus-5';
+const ANTHROPIC_API = 'https://api.anthropic.com/v1';
+// The direct-browser-access header is what Anthropic asks for when the key belongs to the person
+// using the browser, which is the case here: their own key, on their own phone.
+const anthropicHeaders = (apiKey) => ({
+  'Content-Type': 'application/json',
+  'x-api-key': apiKey,
+  'anthropic-version': '2023-06-01',
+  'anthropic-dangerous-direct-browser-access': 'true',
+});
+
+function claudeProblem(status, data) {
+  const type = data?.error?.type || '';
+  const message = data?.error?.message || '';
+  if (status === 401 || type === 'authentication_error') return "Anthropic didn't accept your Claude key. Check it in Settings.";
+  if (/credit balance|billing|purchase/i.test(message)) return 'Your Anthropic account is out of credit. Add some at console.anthropic.com under Billing.';
+  if (status === 429) return 'Claude is busy right now. Wait a few seconds and try again.';
+  if (status === 404 || type === 'not_found_error') return "That Claude model isn't available on your account. Check the model in Settings.";
+  if (status >= 500 || type === 'overloaded_error') return 'Claude is having problems right now. Try again, or use Copy for Claude.';
+  return message || `Claude returned an error (${status}).`;
+}
+
+export async function writeWithClaude({ apiKey, model = DEFAULT_CLAUDE_MODEL, system, user, signal }) {
+  const { controller, timer } = abortable(signal);
+  try {
+    // Newer models take adaptive thinking and server-side fallbacks; if the chosen model rejects
+    // either, ask again without it rather than fail.
+    const use = { fallbacks: true, thinking: true };
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const body = {
+        model: model || DEFAULT_CLAUDE_MODEL,
+        max_tokens: 8192,
+        system,
+        messages: [{ role: 'user', content: user }],
+      };
+      if (use.thinking) {
+        body.thinking = { type: 'adaptive' };
+        body.output_config = { effort: 'low' }; // a rewrite doesn't need deep thought; keeps it quick and cheap
+      }
+      const headers = anthropicHeaders(apiKey);
+      if (use.fallbacks) {
+        // If Claude declines the request, Anthropic answers with a fallback model instead of failing.
+        headers['anthropic-beta'] = 'server-side-fallback-2026-07-01';
+        body.fallbacks = 'default';
+      }
+      const res = await fetch(`${ANTHROPIC_API}/messages`, { method: 'POST', headers, body: JSON.stringify(body), signal: controller.signal });
+      const data = await res.json().catch(() => null);
+      if (res.ok) {
+        if (data?.stop_reason === 'refusal') throw new FriendlyError("Claude wouldn't write this one. Try rewording it, or use Copy for Claude.");
+        const text = (data?.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+        if (!text) throw new FriendlyError('Claude sent back an empty answer. Try again.');
+        return text;
+      }
+      const message = data?.error?.message || '';
+      if (res.status === 400 && use.fallbacks && /fallback|beta/i.test(message)) {
+        use.fallbacks = false;
+        continue;
+      }
+      if (res.status === 400 && use.thinking && /thinking|effort|output_config/i.test(message)) {
+        use.thinking = false;
+        continue;
+      }
+      throw new FriendlyError(claudeProblem(res.status, data));
+    }
+    throw new FriendlyError("Claude couldn't write the breakdown. Try again.");
+  } catch (err) {
+    if (err instanceof FriendlyError) throw err;
+    if (signal?.aborted) throw new Error(CANCELLED);
+    if (err?.name === 'AbortError') throw new Error('Claude took too long. Try again.');
+    throw new Error('No connection to Claude. Try again when you have signal, or use Copy for Claude.');
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Free check that the key works and can use the model (looking a model up costs nothing).
+export async function checkClaudeKey(apiKey, model = DEFAULT_CLAUDE_MODEL) {
+  let res;
+  try {
+    res = await fetch(`${ANTHROPIC_API}/models/${encodeURIComponent(model || DEFAULT_CLAUDE_MODEL)}`, { headers: anthropicHeaders(apiKey) });
+  } catch {
+    return { ok: false, message: 'No connection. Check your signal and try again.' };
+  }
+  if (res.ok) return { ok: true };
+  return { ok: false, message: claudeProblem(res.status, await res.json().catch(() => null)) };
+}
+
 // Free check that the key works (looking up a model doesn't use any of the free allowance).
 export async function checkGeminiKey(apiKey) {
   for (const model of GEMINI_MODELS) {
