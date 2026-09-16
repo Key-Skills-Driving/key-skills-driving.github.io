@@ -1,12 +1,12 @@
 import { db } from './db.js';
 import {
   DEFAULT_MODEL, systemPrompt, userMessage, modifyMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
-  writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey, normalizeStyle, styleIsSet, STYLE_LIMITS,
+  writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey, normalizeStyle, styleIsSet, STYLE_LIMITS, CANCELLED,
 } from './ai.js';
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.4.0';
+const VERSION = '3.4.1';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -188,10 +188,12 @@ async function ensureDevice() {
 }
 
 // Calls the school server as this phone. Throws an Error with a message fit to show, and .status.
-async function school(path, body) {
+async function school(path, body, { signal } = {}) {
   const d = await ensureDevice();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 90000);
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', () => controller.abort(), { once: true });
   let res;
   try {
     res = await fetch(`${SCHOOL_API}${path}`, {
@@ -201,6 +203,7 @@ async function school(path, body) {
       signal: controller.signal,
     });
   } catch (err) {
+    if (signal?.aborted) throw new Error(CANCELLED);
     throw new Error(err?.name === 'AbortError' ? 'The school server took too long. Try again.' : "Couldn't reach the school server. Check your signal and try again.");
   } finally {
     clearTimeout(timer);
@@ -535,12 +538,33 @@ function aiProvider() {
 const PROVIDER_NOTE = { gemini: 'Free, with Google Gemini', school: 'Free, through Key Skills', chatgpt: 'Using ChatGPT (paid)' };
 
 // Writes a breakdown (or a modified one) with whichever AI this phone uses.
-async function askAI({ raw, current, change }) {
+// One AI request runs at a time. New lesson, Cancel or Done stops it, and a late answer from a
+// stopped request is thrown away instead of landing in whatever's on screen by then.
+let inflight = null;
+let inflightCount = 0;
+
+function startRequest() {
+  inflight?.controller.abort();
+  inflight = { id: ++inflightCount, controller: new AbortController() };
+  return inflight;
+}
+
+const isCurrent = (run) => inflight?.id === run.id && !run.controller.signal.aborted;
+
+function cancelWriting() {
+  inflight?.controller.abort();
+  inflight = null;
+  state.busy = false;
+  if (state.modify) state.modify.busy = false;
+  keepAwake('writing', false);
+}
+
+async function askAI({ raw, current, change, signal }) {
   const { geminiKey, apiKey, model, extra, style } = state.settings;
   const modifying = current !== undefined;
   if (aiProvider() === 'school') {
     try {
-      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra, style });
+      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra, style }, { signal });
       return data.text;
     } catch (err) {
       // Approval can be taken away; find out so the join card comes back.
@@ -551,15 +575,16 @@ async function askAI({ raw, current, change }) {
   const system = systemPrompt(extra, style);
   const user = modifying ? modifyMessage({ raw, current, change }) : userMessage({ raw });
   return aiProvider() === 'gemini'
-    ? writeWithGemini({ apiKey: geminiKey, system, user })
-    : writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
+    ? writeWithGemini({ apiKey: geminiKey, system, user, signal })
+    : writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user, signal });
 }
 
 function writeActions() {
   const provider = aiProvider();
   if (provider) {
-    return `<button class="btn btn-primary btn-block btn-tall" data-action="generate"${state.busy ? ' disabled' : ''}>
-      ${state.busy ? '<span class="spinner" aria-hidden="true"></span> Writing the breakdown…' : `${ICON.zap} Break it down`}
+    // While it's writing, the same button is the cancel.
+    return `<button class="btn btn-primary btn-block btn-tall" data-action="${state.busy ? 'cancel-writing' : 'generate'}">
+      ${state.busy ? '<span class="spinner" aria-hidden="true"></span> Writing… tap to cancel' : `${ICON.zap} Break it down`}
     </button>
     <p class="hint center">${PROVIDER_NOTE[provider]}</p>`;
   }
@@ -642,22 +667,28 @@ function needRaw() {
 
 async function generate() {
   if (state.busy || needRaw()) return;
+  const run = startRequest();
   state.busy = true;
   // If the screen locked mid-request, iOS would pause the app and the answer could be lost.
   keepAwake('writing', true);
   refreshWrite();
   try {
-    const text = await askAI({ raw: state.draft.raw });
+    const text = await askAI({ raw: state.draft.raw, signal: run.controller.signal });
+    if (!isCurrent(run)) return; // stopped meanwhile: whoever stopped it already reset the screen
     state.busy = false;
     await setResult(cleanReply(text));
     toast('Done. Tap Copy to paste it anywhere.');
   } catch (err) {
+    if (!isCurrent(run) || err.message === CANCELLED) return;
     state.busy = false;
     if (aiProvider()) refreshWrite();
     else render(); // lost school approval: bring the join card back
     toast(err.message);
   } finally {
-    keepAwake('writing', false);
+    if (isCurrent(run)) {
+      inflight = null;
+      keepAwake('writing', false);
+    }
   }
 }
 
@@ -770,6 +801,7 @@ function onResultEdit(value) {
 }
 
 function startOver() {
+  if (state.busy) cancelWriting(); // a breakdown mid-write would otherwise land in the new lesson
   state.draft = { raw: '', result: '', aiText: '', savedId: null };
   state.editingResult = false;
   saveDraft(true);
@@ -866,8 +898,8 @@ function renderModify(id) {
     ? `use <a href="#/saved/${esc(id)}">Edit</a> to change it by hand`
     : 'tap Edit under the breakdown to change it by hand';
   const action = aiProvider()
-    ? `<button class="btn btn-primary btn-block btn-tall" data-action="run-modify"${m.busy ? ' disabled' : ''}>
-        ${m.busy ? '<span class="spinner" aria-hidden="true"></span> Making the changes…' : `${ICON.zap} Modify it`}
+    ? `<button class="btn btn-primary btn-block btn-tall" data-action="${m.busy ? 'cancel-modify' : 'run-modify'}">
+        ${m.busy ? '<span class="spinner" aria-hidden="true"></span> Making changes… tap to cancel' : `${ICON.zap} Modify it`}
       </button>
       <p class="hint center">Uses your original notes and only changes what you ask.</p>`
     : `<p class="hint">Modify needs one-tap AI. <a href="#/settings">Turn it on in Settings</a> (it's free), or ${byHand}.</p>`;
@@ -901,22 +933,28 @@ async function runModify() {
     $('#mod-change')?.focus();
     return;
   }
+  const run = startRequest();
   m.busy = true;
   keepAwake('writing', true);
   render();
   try {
-    const text = await askAI({ raw: target.raw, current: m.result || target.text, change: m.change });
+    const text = await askAI({ raw: target.raw, current: m.result || target.text, change: m.change, signal: run.controller.signal });
+    if (!isCurrent(run)) return;
     m.result = cleanReply(text);
     m.change = '';
     toast(`Done. Tap ${target.keep} to keep it.`);
   } catch (err) {
+    if (!isCurrent(run) || err.message === CANCELLED) return;
     toast(err.message);
   } finally {
-    m.busy = false;
-    keepAwake('writing', false);
-    if (parseRoute().name === 'modify' && state.modify === m) {
-      render();
-      window.scrollTo({ top: 0, behavior: 'smooth' });
+    if (isCurrent(run)) {
+      inflight = null;
+      m.busy = false;
+      keepAwake('writing', false);
+      if (parseRoute().name === 'modify' && state.modify === m) {
+        render();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      }
     }
   }
 }
@@ -965,6 +1003,7 @@ async function saveModify() {
 function leaveModify() {
   const m = state.modify;
   if (m?.result && !confirm(m.id ? 'Leave without saving the new version?' : 'Leave without using the new version?')) return;
+  if (m?.busy) cancelWriting();
   state.modify = null;
   if (m?.id) go('/saved', true);
   else backToBreakdown();
@@ -1610,6 +1649,16 @@ async function restoreFrom(input) {
 const actions = {
   generate: () => generate(),
   'copy-ai': (el) => copyForAI(el.dataset.ai),
+  'cancel-writing': () => {
+    cancelWriting();
+    refreshWrite();
+    toast('Stopped');
+  },
+  'cancel-modify': () => {
+    cancelWriting();
+    render();
+    toast('Stopped');
+  },
   'paste-reply': () => pasteReply(),
   'use-paste': () => useFallbackPaste(),
   'copy-result': () => copyResult(),

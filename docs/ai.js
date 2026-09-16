@@ -169,9 +169,19 @@ function explain(status, err) {
   return err?.error?.message || `ChatGPT returned an error (${status}).`;
 }
 
-export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, user }) {
+// `signal` lets the app cancel a request (New lesson, Cancel) on top of the 90-second timeout.
+function abortable(signal) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 90000);
+  if (signal?.aborted) controller.abort();
+  else signal?.addEventListener('abort', () => controller.abort(), { once: true });
+  return { controller, timer };
+}
+
+export const CANCELLED = 'Cancelled';
+
+export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, user, signal }) {
+  const { controller, timer } = abortable(signal);
   try {
     let usedModel = model || DEFAULT_MODEL;
     let lowEffort = true;
@@ -199,6 +209,7 @@ export async function writeWithChatGPT({ apiKey, model = DEFAULT_MODEL, system, 
     throw new FriendlyError('ChatGPT couldn\'t write the breakdown. Try again.');
   } catch (err) {
     if (err instanceof FriendlyError) throw err;
+    if (signal?.aborted) throw new Error(CANCELLED);
     if (err?.name === 'AbortError') throw new Error('ChatGPT took too long. Try again.');
     if (!navigator.onLine) throw new Error('No signal. Try again when you have one, or use Copy for ChatGPT.');
     // OpenAI hides its error replies (bad key, no credit) from web pages, so they surface here
@@ -230,9 +241,8 @@ function geminiProblem(status, data) {
   return e.message || `Gemini returned an error (${status}).`;
 }
 
-export async function writeWithGemini({ apiKey, system, user }) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+export async function writeWithGemini({ apiKey, system, user, signal }) {
+  const { controller, timer } = abortable(signal);
   let problem = null;
   try {
     for (const model of GEMINI_MODELS) {
@@ -274,6 +284,7 @@ export async function writeWithGemini({ apiKey, system, user }) {
     throw new FriendlyError(problem || "Gemini couldn't write the breakdown. Try again.");
   } catch (err) {
     if (err instanceof FriendlyError) throw err;
+    if (signal?.aborted) throw new Error(CANCELLED);
     if (err?.name === 'AbortError') throw new Error('Gemini took too long. Try again.');
     throw new Error('No connection to Gemini. Try again when you have signal, or use Copy for ChatGPT.');
   } finally {
