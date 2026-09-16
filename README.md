@@ -7,7 +7,13 @@ A home-screen app for driving instructors at Key Skills Driving School. Talk thr
 - **Modify:** on a fresh breakdown or a saved one, tell the AI what to change. It gets your original notes and the current version, and you keep or undo the result.
 - **Finished students:** if the notes say the student passed or completed their test, or it was their last lesson, the breakdown leaves out "Focus for next lesson".
 - **Wipe App** (Settings) deletes only this app's data, behind a tick box and a confirmation that lists what goes.
-- **Inviting a coworker:** Settings > Invite a coworker texts the link and steps, optionally with your free Gemini key. A new user sees a "Turn on free AI" card with **Get a free key** and **Paste key** (which also pulls the key out of a copied invite).
+- **Inviting a coworker:** Settings > Invite a coworker texts the link and the steps. A new instructor types their first name, taps **Ask to join**, and an admin approves that phone once, from Settings > Manage phones. No keys to pass around.
+
+## The school server (`worker/`)
+
+A Cloudflare Worker (`ksds-lessons`) plus a D1 database holds the school's Gemini key and the list of approved phones, so staff never need a key. Each phone makes up an id and secret token; the server keeps only a hash. The first phone to tap **Become the admin** claims the school, and after that only admins can approve, remove or promote phones, or change the school key (which is never sent back to a phone). The server builds the prompt itself (it imports `docs/ai.js`), only answers the app's own origin, allows 200 breakdowns per phone per day, and keeps no lesson text or logs.
+
+Deploy with `npx wrangler deploy` from `worker/`. For local testing, `wrangler dev` on port 8787 (the app switches to it automatically on localhost) needs `http://localhost:8787` temporarily added to the `connect-src` list in `docs/index.html`.
 - **Review:** the school's "Please leave a review" card with a scannable QR code, and a Send button.
 - **Private:** everything stays on the phone (IndexedDB). API keys only leave the phone to call Google or OpenAI, and aren't included in backups. Breakdowns never use names (the student is always "the student"). On Gemini's free tier Google may use what's sent to improve its products, so the app suggests leaving last names out of the dictation.
 - **Screen stays on** while you dictate, while a breakdown is being written, and while the review card is showing.

@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '2.7.0';
+const VERSION = '3.0.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -24,9 +24,19 @@ const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
 const APP_URL = new URL('./', location.href).href;
 const GEMINI_KEY = /AIza[0-9A-Za-z_-]{30,}/;
 
+// The school server (worker/ in this repo). Phones an admin has approved write breakdowns through
+// it with the school's Gemini key, so staff never need a key of their own.
+const SCHOOL_API = location.hostname === 'localhost' ? 'http://localhost:8787' : 'https://ksds-lessons.ksds-lessons-worker.workers.dev';
+// This phone's identity on the school server: made up on this phone, approved by an admin once.
+// status: none | pending | approved | removed. adminExists is null until the server's been asked.
+const defaultDevice = () => ({ id: '', token: '', status: 'none', name: '', admin: false, adminExists: null });
+
 const state = {
   items: new Map(), // saved breakdowns: the ones you write up, plus prewritten ones
   settings: defaultSettings(),
+  device: defaultDevice(),
+  phones: null, // the admin's list from the school server
+  pendingCount: 0, // phones waiting for an admin's approval (admins only)
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
   modify: null, // { id, change, result, busy }: asking the AI to change a saved breakdown
   busy: false,
@@ -148,6 +158,83 @@ function askPersist() {
 }
 
 const saveSettings = () => db.setMeta('settings', { ...state.settings }).catch(() => {});
+const saveDevice = () => db.setMeta('device', { ...state.device }).catch(() => {});
+
+// ---------- the school server ----------
+
+function randomId() {
+  return [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function ensureDevice() {
+  const d = state.device;
+  if (!d.id || !d.token) {
+    d.id = randomId();
+    d.token = randomToken();
+    await saveDevice();
+  }
+  return d;
+}
+
+// Calls the school server as this phone. Throws an Error with a message fit to show, and .status.
+async function school(path, body) {
+  const d = await ensureDevice();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 90000);
+  let res;
+  try {
+    res = await fetch(`${SCHOOL_API}${path}`, {
+      method: body ? 'POST' : 'GET',
+      headers: { Authorization: `Device ${d.id}:${d.token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+      signal: controller.signal,
+    });
+  } catch (err) {
+    throw new Error(err?.name === 'AbortError' ? 'The school server took too long. Try again.' : "Couldn't reach the school server. Check your signal and try again.");
+  } finally {
+    clearTimeout(timer);
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || `The school server had a problem (${res.status}).`);
+    err.status = res.status;
+    throw err;
+  }
+  return data;
+}
+
+function applyMe(me) {
+  Object.assign(state.device, {
+    status: me.status || 'none', name: me.name || state.device.name, admin: !!me.admin, adminExists: me.adminExists ?? state.device.adminExists,
+  });
+  saveDevice();
+}
+
+// Asks the school server where this phone stands (and, for admins, who's waiting). Re-renders only
+// if something visible changed and nobody's typing, so a background check never eats your words.
+let lastSync = 0;
+async function syncSchool({ force = false } = {}) {
+  if (!force && Date.now() - lastSync < 20000) return;
+  lastSync = Date.now();
+  const before = JSON.stringify([state.device.status, state.device.admin, state.device.adminExists, state.pendingCount]);
+  try {
+    applyMe(await school('/me'));
+    if (state.device.admin) {
+      state.phones = await school('/admin/phones');
+      state.pendingCount = state.phones.phones.filter((p) => p.status === 'pending').length;
+    }
+  } catch {
+    return; // offline or server down: keep what we knew
+  }
+  const after = JSON.stringify([state.device.status, state.device.admin, state.device.adminExists, state.pendingCount]);
+  const typing = document.activeElement?.matches?.('input, textarea');
+  if (before !== after && !typing && ['write', 'settings'].includes(parseRoute().name)) render();
+}
 
 let draftTimer;
 function saveDraft(now = false) {
@@ -181,6 +268,7 @@ function parseRoute() {
     case 'review': return { name: 'review' };
     case 'settings': return { name: 'settings' };
     case 'modify': return { name: 'modify', id: null }; // the fresh breakdown on the first tab
+    case 'phones': return { name: 'phones' };
     default: return { name: 'write' };
   }
 }
@@ -209,6 +297,7 @@ function render() {
     case 'modify': renderModify(r.id); break;
     case 'review': renderReview(); break;
     case 'settings': renderSettings(); break;
+    case 'phones': renderPhones(); break;
     default: renderWrite();
   }
   if (key !== state.lastView) window.scrollTo(0, 0);
@@ -249,18 +338,63 @@ function installBanner() {
   return `<div class="banner banner-gold"><div><strong>Add this to your Home Screen first.</strong> In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Then open it from the new icon. Anything set up here in Safari stays in Safari.</div></div>`;
 }
 
-// First-run help for someone new: two buttons to turn on free Gemini.
+// First-run help for someone new: ask the school's admin to approve this phone, once.
 function setupCard() {
-  if (aiProvider() || state.settings.setupDismissed || inSafariNotInstalled()) return '';
+  if (aiProvider() || inSafariNotInstalled()) return '';
+  const d = state.device;
+  if (d.status === 'pending') {
+    return `<section class="card setup-card">
+      <h2>Waiting for approval</h2>
+      <p>You asked to join as <strong>${esc(d.name)}</strong>. As soon as your admin approves this phone, <strong>Break it down</strong> writes breakdowns for you. You only do this once.</p>
+      <button class="btn btn-primary btn-block" data-action="check-approval">Check again</button>
+    </section>`;
+  }
+  if (state.settings.setupDismissed) return '';
+  const firstAdmin = d.adminExists === false
+    ? '<p class="hint">Setting this up for the school? <a href="#/settings">Become the admin</a> in Settings instead.</p>'
+    : '';
   return `<section class="card setup-card">
     <h2>Turn on free AI</h2>
-    <p>Then <strong>Break it down</strong> writes the breakdown for you in one tap. It's free and takes about a minute.</p>
-    <a class="btn btn-primary btn-block" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">1. Get a free key from Google</a>
-    <p class="hint">Sign in with Google, tap <strong>Create API key</strong>, then copy it and come back.</p>
-    <button class="btn btn-block" data-action="paste-gemini-key">2. Paste key</button>
-    <p class="hint">Got a key from a coworker? Copy their whole message, then tap <strong>Paste key</strong>.</p>
+    <p>Type your first name and tap <strong>Ask to join</strong>. Your admin approves this phone once, then <strong>Break it down</strong> writes the breakdown for you. It's free.</p>
+    <label class="field"><span class="label">First name</span>
+      <input id="join-name" value="${esc(d.name)}" maxlength="40" autocomplete="given-name" autocapitalize="words" enterkeyhint="send"></label>
+    <button class="btn btn-primary btn-block" data-action="join">Ask to join</button>
+    ${firstAdmin}
+    <p class="hint">Have your own Gemini key? <button class="link-inline" data-action="paste-gemini-key">Paste key</button></p>
     <button class="link-btn" data-action="dismiss-setup">Not now</button>
   </section>`;
+}
+
+function adminBanner() {
+  if (!state.device.admin || !state.pendingCount) return '';
+  const who = state.pendingCount === 1 ? '1 phone is' : `${state.pendingCount} phones are`;
+  return `<div class="banner banner-gold"><span>${who} waiting for your approval.</span><a class="btn btn-small" href="#/phones">Review</a></div>`;
+}
+
+async function joinSchool(button) {
+  const name = ($('#join-name')?.value || '').trim();
+  if (!name) {
+    toast('Type your first name first');
+    $('#join-name')?.focus();
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Sending…';
+  try {
+    applyMe(await school('/join', { name }));
+    toast('Request sent. Your admin needs to approve this phone.');
+  } catch (err) {
+    toast(err.message);
+  }
+  render();
+}
+
+async function checkApproval(button) {
+  button.disabled = true;
+  button.textContent = 'Checking…';
+  await syncSchool({ force: true });
+  toast(state.device.status === 'approved' ? "You're approved. Break it down is ready." : 'Not approved yet. Try again once your admin has approved it.');
+  render();
 }
 
 function backupBanner() {
@@ -281,6 +415,7 @@ function renderWrite() {
     ${header({ title: 'Lesson Breakdown', right: settingsLink })}
     <main class="view with-tabs">
       ${installBanner()}
+      ${adminBanner()}
       ${setupCard()}
       <label class="field"><span class="label big-label">What happened in the lesson?</span>
         <textarea id="raw" class="big" rows="6" placeholder="Tap here, then tap the 🎤 on your keyboard and talk it through: what you worked on, how they did, and what needs work.">${esc(d.raw)}</textarea></label>
@@ -292,11 +427,35 @@ function renderWrite() {
   $$('textarea', app).forEach(autosize);
 }
 
-// Free Gemini wins whenever it's set up; ChatGPT is only used if it's the one key there.
+// A phone's own Gemini key wins, then the school's AI once this phone is approved, then ChatGPT.
 function aiProvider() {
   if (state.settings.geminiKey) return 'gemini';
+  if (state.device.status === 'approved') return 'school';
   if (state.settings.apiKey) return 'chatgpt';
   return null;
+}
+
+const PROVIDER_NOTE = { gemini: 'Free, with Google Gemini', school: 'Free, through Key Skills', chatgpt: 'Using ChatGPT (paid)' };
+
+// Writes a breakdown (or a modified one) with whichever AI this phone uses.
+async function askAI({ raw, current, change }) {
+  const { geminiKey, apiKey, model, extra } = state.settings;
+  const modifying = current !== undefined;
+  if (aiProvider() === 'school') {
+    try {
+      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra });
+      return data.text;
+    } catch (err) {
+      // Approval can be taken away; find out so the join card comes back.
+      if (err.status === 401 || err.status === 403) await syncSchool({ force: true });
+      throw err;
+    }
+  }
+  const system = systemPrompt(extra);
+  const user = modifying ? modifyMessage({ raw, current, change }) : userMessage({ raw });
+  return aiProvider() === 'gemini'
+    ? writeWithGemini({ apiKey: geminiKey, system, user })
+    : writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
 }
 
 function writeActions() {
@@ -305,7 +464,7 @@ function writeActions() {
     return `<button class="btn btn-primary btn-block btn-tall" data-action="generate"${state.busy ? ' disabled' : ''}>
       ${state.busy ? '<span class="spinner" aria-hidden="true"></span> Writing the breakdown…' : `${ICON.zap} Break it down`}
     </button>
-    <p class="hint center">${provider === 'gemini' ? 'Free, with Google Gemini' : 'Using ChatGPT (paid)'}</p>`;
+    <p class="hint center">${PROVIDER_NOTE[provider]}</p>`;
   }
   return `<div class="two">
       <button class="btn btn-primary" data-action="copy-ai" data-ai="chatgpt">Copy for ChatGPT</button>
@@ -317,7 +476,7 @@ function writeActions() {
       <textarea id="f-paste" rows="3" placeholder="Press and hold here, then tap Paste"></textarea>
       <button class="btn btn-block" data-action="use-paste">Use this reply</button>
     </div>
-    <p class="hint center"><a href="#/settings">Turn on free one-tap AI</a> to skip the copying and pasting.</p>`;
+    <p class="hint center">Turn on free AI above to skip the copying and pasting.</p>`;
 }
 
 function resultCard() {
@@ -389,19 +548,15 @@ async function generate() {
   // If the screen locked mid-request, iOS would pause the app and the answer could be lost.
   keepAwake('writing', true);
   refreshWrite();
-  const { geminiKey, apiKey, model, extra } = state.settings;
-  const system = systemPrompt(extra);
-  const user = userMessage({ raw: state.draft.raw });
   try {
-    const text = aiProvider() === 'gemini'
-      ? await writeWithGemini({ apiKey: geminiKey, system, user })
-      : await writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
+    const text = await askAI({ raw: state.draft.raw });
     state.busy = false;
     await setResult(cleanReply(text));
     toast('Done. Tap Copy to paste it anywhere.');
   } catch (err) {
     state.busy = false;
-    refreshWrite();
+    if (aiProvider()) refreshWrite();
+    else render(); // lost school approval: bring the join card back
     toast(err.message);
   } finally {
     keepAwake('writing', false);
@@ -620,13 +775,8 @@ async function runModify() {
   m.busy = true;
   keepAwake('writing', true);
   render();
-  const { geminiKey, apiKey, model, extra } = state.settings;
-  const system = systemPrompt(extra);
-  const user = modifyMessage({ raw: target.raw, current: m.result || target.text, change: m.change });
   try {
-    const text = aiProvider() === 'gemini'
-      ? await writeWithGemini({ apiKey: geminiKey, system, user })
-      : await writeWithChatGPT({ apiKey, model: model || DEFAULT_MODEL, system, user });
+    const text = await askAI({ raw: target.raw, current: m.result || target.text, change: m.change });
     m.result = cleanReply(text);
     m.change = '';
     toast(`Done. Tap ${target.keep} to keep it.`);
@@ -846,12 +996,15 @@ function renderSettings() {
     <main class="view settings">
       <section class="card">
         <h2>Invite a coworker</h2>
-        <p>Texts them the link and the steps to set it up.</p>
+        <p>Texts them the link. They ask to join from the app, and an admin approves their phone.</p>
         <button class="btn btn-primary btn-block" data-action="invite">${ICON.send} Invite a coworker</button>
       </section>
 
-      <section class="card">
-        <h2>Free one-tap AI</h2>
+      ${schoolSection()}
+
+      <details class="card advanced-card"${st.geminiKey ? ' open' : ''}>
+        <summary>Use your own Gemini key</summary>
+        <p class="fine">Not needed if this phone is approved for the school's AI. Your own key is used instead when it's set.</p>
         ${st.geminiKey
           ? `<p class="ok-line">Connected to Google Gemini (key ${esc(maskKey(st.geminiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app, free.</p>
              <button class="btn btn-block" data-action="remove-gemini-key">Remove key</button>`
@@ -868,7 +1021,7 @@ function renderSettings() {
         <p class="fine"><strong>Why it's free:</strong> you never give Google a card, so it can't charge you. If you ever hit the free daily limit, it just asks you to wait. Don't turn on billing in AI Studio.</p>
         <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Breakdowns never include names, but what you dictate is sent as you said it, so leave out last names.</p>
         <p class="fine">The key stays on this phone and isn't included in backups.</p>
-      </section>
+      </details>
 
       <details class="card advanced-card">
         <summary>Use ChatGPT instead (costs a little)</summary>
@@ -922,17 +1075,137 @@ function renderSettings() {
         <h2>Privacy &amp; security</h2>
         <ul class="steps">
           <li>This app can't see anything else on your phone: no contacts, photos, location or other apps. It doesn't ask for any permissions.</li>
-          <li>Breakdowns, keys and settings are stored only on this phone. The only thing that leaves it is what you dictate, sent to Gemini (or ChatGPT) when you tap <strong>Break it down</strong>.</li>
-          <li>Your AI key is only ever sent to Google or OpenAI, and isn't included in backups.</li>
+          <li>Breakdowns, keys and settings are stored only on this phone. The only thing that leaves it is what you dictate, sent to Gemini when you tap <strong>Break it down</strong> (through the school's server if you joined).</li>
+          <li>If you joined the school's AI, the school's server keeps your first name and when you last used the app, so an admin can approve or remove phones. It doesn't keep anything you dictate.</li>
+          <li>Your own AI key, if you add one, is only ever sent to Google or OpenAI, and isn't included in backups.</li>
           <li>Backup files contain your breakdowns in plain text, so keep them private.</li>
         </ul>
-        <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key and settings. Nothing else on my phone is touched.</span></label>
+        <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key, settings and school approval. Nothing else on my phone is touched.</span></label>
         <button id="wipe-btn" class="btn btn-block btn-danger" data-action="wipe-app" disabled>Wipe App</button>
       </section>
 
       <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
     </main>`;
   $$('textarea', app).forEach(autosize);
+  if (state.device.adminExists === null) syncSchool({ force: true });
+}
+
+function schoolSection() {
+  const d = state.device;
+  const as = d.name ? ` as <strong>${esc(d.name)}</strong>` : '';
+  const line = {
+    approved: `This phone is approved${as}. <strong>Break it down</strong> uses the school's free AI.`,
+    pending: `This phone asked to join${as} and is waiting for an admin to approve it.`,
+    removed: 'This phone was removed. You can ask to join again on the Break down tab.',
+    none: "This phone hasn't joined yet. Ask to join on the Break down tab.",
+  }[d.status] || '';
+  let actions = '';
+  if (d.admin) {
+    actions = `<a class="btn btn-primary btn-block" href="#/phones">Manage phones${state.pendingCount ? ` (${state.pendingCount} waiting)` : ''}</a>`;
+  } else if (d.adminExists === false) {
+    actions = `<p class="fine">Nobody manages this school's phones yet. If that's your job, tap below on your own phone. The first phone to do it becomes the admin, and the button disappears for everyone else.</p>
+      <button class="btn btn-block" data-action="claim-admin">Become the admin</button>`;
+  }
+  return `<section class="card"><h2>School AI</h2><p>${line}</p>${actions}</section>`;
+}
+
+async function claimAdmin(button) {
+  const name = (prompt('Your first name, as it should show on the phones list') || '').trim();
+  if (!name) return;
+  button.disabled = true;
+  button.textContent = 'Setting up…';
+  try {
+    applyMe(await school('/admin/claim', { name }));
+    toast("You're the admin. Add the school's key, then approve phones here.");
+    go('/phones');
+  } catch (err) {
+    toast(err.message);
+    render();
+  }
+}
+
+// ---------- phones: the admin's approval list ----------
+
+function renderPhones() {
+  if (!state.device.admin) return go('/settings', true);
+  app.innerHTML = `
+    ${header({ left: backLink('/settings', 'Settings'), title: 'Phones' })}
+    <main class="view phones"><div id="phones-body">${state.phones ? phonesBody() : '<p class="empty-note">Loading…</p>'}</div></main>`;
+  loadPhones();
+}
+
+function showPhones(data) {
+  state.phones = data;
+  state.pendingCount = data.phones.filter((p) => p.status === 'pending').length;
+  if (parseRoute().name === 'phones') $('#phones-body').innerHTML = phonesBody();
+}
+
+async function loadPhones() {
+  try {
+    showPhones(await school('/admin/phones'));
+  } catch (err) {
+    if (parseRoute().name === 'phones' && !state.phones) $('#phones-body').innerHTML = `<div class="card"><p>${esc(err.message)}</p></div>`;
+  }
+}
+
+async function phoneAction(path, body, done) {
+  try {
+    showPhones(await school(path, body));
+    toast(done);
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+function phonesBody() {
+  const { phones, keySet } = state.phones;
+  const waiting = phones.filter((p) => p.status === 'pending');
+  const approved = phones.filter((p) => p.status === 'approved');
+  const me = state.device.id;
+  const tags = (p) => `${p.admin ? '<span class="pill pill-gold">Admin</span>' : ''}${p.id === me ? '<span class="pill">This phone</span>' : ''}`;
+  const waitingCard = (p) => `<div class="card phone-card">
+      <div class="phone-name">${esc(p.name)}</div>
+      <div class="phone-meta">Asked ${esc(whenLabel(p.created_at))}</div>
+      <div class="two">
+        <button class="btn btn-primary" data-action="approve-phone" data-id="${esc(p.id)}">Approve</button>
+        <button class="btn" data-action="remove-phone" data-id="${esc(p.id)}" data-name="${esc(p.name)}" data-pending="1">Decline</button>
+      </div>
+    </div>`;
+  const approvedCard = (p) => `<div class="card phone-card">
+      <div class="phone-name">${esc(p.name)} ${tags(p)}</div>
+      <div class="phone-meta">${p.last_seen ? `Last used ${esc(whenLabel(p.last_seen))}` : 'Not used yet'}</div>
+      ${p.id === me ? '' : `<div class="two">
+        <button class="btn" data-action="toggle-admin" data-id="${esc(p.id)}" data-admin="${p.admin ? '0' : '1'}">${p.admin ? 'Remove admin' : 'Make admin'}</button>
+        <button class="btn btn-danger-soft" data-action="remove-phone" data-id="${esc(p.id)}" data-name="${esc(p.name)}">Remove</button>
+      </div>`}
+    </div>`;
+  return `
+    <section class="card">
+      <h2 class="card-title">School AI key</h2>
+      ${keySet ? '<p class="ok-line">Set. Approved phones use it.</p>' : "<p>Not set yet. Approved phones can't write breakdowns until it is.</p>"}
+      ${state.settings.geminiKey ? '<button class="btn btn-block" data-action="school-key-mine">Use this phone\'s Gemini key</button>' : ''}
+      <button class="btn btn-block" data-action="school-key-paste">${keySet ? 'Replace it with a key from the clipboard' : 'Paste a Gemini key'}</button>
+      <p class="fine">It's kept on the school's server and never sent back to any phone.</p>
+    </section>
+    <h2 class="list-title">Waiting for approval</h2>
+    ${waiting.length ? `<div class="list">${waiting.map(waitingCard).join('')}</div>` : '<p class="empty-note">Nobody is waiting right now.</p>'}
+    <h2 class="list-title">Approved phones</h2>
+    <div class="list">${approved.map(approvedCard).join('')}</div>`;
+}
+
+async function pasteSchoolKey() {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    text = '';
+  }
+  const key = text.match(GEMINI_KEY)?.[0];
+  if (!key) {
+    toast("There's no Gemini key on the clipboard. Copy one first.");
+    return;
+  }
+  phoneAction('/admin/key', { key }, 'School key saved. Approved phones can write breakdowns now.');
 }
 
 // Checks a pasted key before keeping it, so a typo shows up now rather than after a lesson.
@@ -988,21 +1261,16 @@ async function pasteGeminiKey(button) {
   render();
 }
 
+// No key in the invite any more: new people ask to join and an admin approves their phone.
 async function inviteCoworker() {
-  const key = state.settings.geminiKey;
-  const shareKey = !!key && confirm("Include your free Gemini key, so they don't have to get their own?\n\nIt can't cost you anything, but you'll share Google's free daily limit. Only send it to people at the school.");
-  const lines = [
+  const text = [
     "Here's the KSDS lesson breakdown app:",
     APP_URL,
     '',
     '1. Open the link in Safari.',
     '2. Tap Share, then Add to Home Screen.',
-    shareKey
-      ? '3. Copy this whole message, open the app from your Home Screen, and tap Paste key.'
-      : '3. Open the app from your Home Screen and follow "Turn on free AI".',
-  ];
-  if (shareKey) lines.push('', `Key: ${key}`);
-  const text = lines.join('\n');
+    `3. Open the app from your Home Screen, type your first name and tap Ask to join. ${state.device.admin ? "I'll approve it." : 'An admin approves it.'}`,
+  ].join('\n');
   if (navigator.share) {
     try { await navigator.share({ text }); } catch { /* cancelled */ }
     return;
@@ -1070,21 +1338,27 @@ async function backup() {
 
 // For a phone that's changing hands or someone leaving the school. Only this app's data goes;
 // its own files stay cached so it still opens.
-const WIPE_WARNING = [
-  'Wipe App?',
-  '',
-  'This deletes, from KSDS Lessons only:',
-  '• All saved and prewritten breakdowns',
-  '• Your AI key',
-  '• Your settings and review card changes',
-  '• Any breakdown you were in the middle of',
-  '',
-  "Nothing else on your phone is touched. This can't be undone.",
-].join('\n');
+function wipeWarning() {
+  const lines = [
+    'Wipe App?',
+    '',
+    'This deletes, from KSDS Lessons only:',
+    '• All saved and prewritten breakdowns',
+    '• Your AI key',
+    '• Your settings and review card changes',
+    '• Any breakdown you were in the middle of',
+    "• This phone's approval for the school's AI (you'd ask to join again)",
+    '',
+    "Nothing else on your phone is touched. This can't be undone.",
+  ];
+  // An admin who wipes their phone can't manage phones any more, so say so while there's time.
+  if (state.device.admin) lines.push('', "You're an admin. Make someone else an admin first, or nobody will be able to approve phones.");
+  return lines.join('\n');
+}
 
 async function wipeApp() {
   if (!$('#wipe-ok')?.checked) return;
-  if (!confirm(WIPE_WARNING)) return;
+  if (!confirm(wipeWarning())) return;
   try {
     await db.clear('items');
     await db.clear('meta');
@@ -1094,6 +1368,9 @@ async function wipeApp() {
   }
   state.items.clear();
   state.settings = defaultSettings();
+  state.device = defaultDevice();
+  state.phones = null;
+  state.pendingCount = 0;
   state.draft = { raw: '', result: '', savedId: null };
   state.editingResult = false;
   state.query = '';
@@ -1186,6 +1463,21 @@ const actions = {
     render();
   },
   invite: () => inviteCoworker(),
+  join: (el) => joinSchool(el),
+  'check-approval': (el) => checkApproval(el),
+  'claim-admin': (el) => claimAdmin(el),
+  'approve-phone': (el) => phoneAction('/admin/approve', { id: el.dataset.id }, 'Approved. They can use it now.'),
+  'remove-phone': (el) => {
+    const pending = !!el.dataset.pending;
+    const question = pending ? `Decline ${el.dataset.name}'s request?` : `Remove ${el.dataset.name}'s phone? They'll have to ask to join again.`;
+    if (confirm(question)) phoneAction('/admin/remove', { id: el.dataset.id }, pending ? 'Request declined' : 'Phone removed');
+  },
+  'toggle-admin': (el) => {
+    const admin = el.dataset.admin === '1';
+    phoneAction('/admin/role', { id: el.dataset.id, admin }, admin ? "They're an admin now" : 'No longer an admin');
+  },
+  'school-key-mine': () => phoneAction('/admin/key', { key: state.settings.geminiKey }, 'School key saved. Approved phones can write breakdowns now.'),
+  'school-key-paste': () => pasteSchoolKey(),
   'edit-result': () => toggleEditResult(),
   'start-over': () => startOver(),
   'copy-item': (el) => copyItem(el),
@@ -1222,6 +1514,10 @@ document.addEventListener('keydown', (e) => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches?.('.item[data-action]')) {
     e.preventDefault();
     copyItem(e.target);
+  }
+  if (e.key === 'Enter' && e.target.id === 'join-name') {
+    e.preventDefault();
+    joinSchool($('[data-action=join]'));
   }
 });
 
@@ -1266,6 +1562,8 @@ document.addEventListener('focusout', (e) => {
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) saveDraft(true);
+  // Coming back to the app: see whether this phone was approved, or who's waiting for an admin.
+  else if (state.device.status === 'pending' || state.device.admin) syncSchool();
   syncWakeLock();
 });
 addEventListener('pagehide', () => saveDraft(true));
@@ -1289,9 +1587,10 @@ async function start() {
     return;
   }
   try {
-    const [items, settings, draft] = await Promise.all([db.all('items'), db.getMeta('settings'), db.getMeta('draft')]);
+    const [items, settings, draft, device] = await Promise.all([db.all('items'), db.getMeta('settings'), db.getMeta('draft'), db.getMeta('device')]);
     items.forEach((i) => state.items.set(i.id, i));
     Object.assign(state.settings, settings || {});
+    Object.assign(state.device, device || {});
     if (draft && typeof draft.raw === 'string') state.draft = { raw: draft.raw, result: draft.result || '', savedId: draft.savedId || null };
   } catch (err) {
     app.innerHTML = `<main class="view"><div class="card"><h2>Couldn't open your saved breakdowns</h2>
@@ -1301,6 +1600,7 @@ async function start() {
   addEventListener('hashchange', render);
   render();
   registerServiceWorker();
+  syncSchool({ force: true });
 }
 
 start();

@@ -1,0 +1,15 @@
+# KSDS Lessons school server. Deploy from this folder with: npx wrangler deploy
+name = "ksds-lessons"
+main = "src/index.js"
+compatibility_date = "2025-09-01"
+workers_dev = true
+preview_urls = false
+
+# Nobody's dictation should end up in logs, so request logging stays off.
+[observability]
+enabled = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "ksds-lessons"
+database_id = "69020ed7-5dea-4458-a8fa-f8d7df09a95e"
