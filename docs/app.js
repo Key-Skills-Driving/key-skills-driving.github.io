@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.0.0';
+const VERSION = '3.0.1';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -22,7 +22,9 @@ const REVIEW_DEFAULTS = {
 const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS });
 const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
 const APP_URL = new URL('./', location.href).href;
-const GEMINI_KEY = /AIza[0-9A-Za-z_-]{30,}/;
+// Google issues Gemini keys in two shapes: the older AIza… and the newer AQ.… ones.
+const GEMINI_KEY = /(?:AIza[\w-]{30,}|AQ\.[\w.-]{25,})/;
+const findKey = (text) => text.match(GEMINI_KEY)?.[0].replace(/\.+$/, '') || '';
 
 // The school server (worker/ in this repo). Phones an admin has approved write breakdowns through
 // it with the school's Gemini key, so staff never need a key of their own.
@@ -1200,7 +1202,7 @@ async function pasteSchoolKey() {
   } catch {
     text = '';
   }
-  const key = text.match(GEMINI_KEY)?.[0];
+  const key = findKey(text);
   if (!key) {
     toast("There's no Gemini key on the clipboard. Copy one first.");
     return;
@@ -1241,7 +1243,7 @@ async function pasteGeminiKey(button) {
   } catch {
     text = '';
   }
-  const key = text.match(GEMINI_KEY)?.[0];
+  const key = findKey(text);
   if (!key) {
     toast(text.trim() ? "There's no Gemini key on the clipboard. Copy the key first." : 'Copy the key first, then tap Paste key.');
     return;
