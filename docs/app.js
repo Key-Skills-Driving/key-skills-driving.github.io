@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.7.0';
+const VERSION = '3.8.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -46,6 +46,7 @@ const state = {
   device: defaultDevice(),
   phones: null, // the admin's list from the school server
   transfer: null, // { id, name }: the master admin is about to pass the role on
+  openSettings: new Set(), // which Settings sections are unfolded, so a re-render doesn't fold them
   pendingCount: 0, // phones waiting for an admin's approval (admins only)
   installPrompt: null, // Android's install prompt, held until the Install button is tapped
   justInstalled: false,
@@ -1213,23 +1214,24 @@ function maskKey(key) {
   return key.length > 12 ? `${key.slice(0, 3)}…${key.slice(-4)}` : 'saved';
 }
 
+// Every Settings section is folded to its title until tapped. What's open survives a re-render.
+function settingsSection(id, title, body, badge = '') {
+  return `<details class="card settings-section" data-section="${id}"${state.openSettings.has(id) ? ' open' : ''}>
+    <summary><span>${title}</span>${badge ? `<span class="pill pill-gold">${esc(badge)}</span>` : ''}</summary>
+    <div class="section-body">${body}</div>
+  </details>`;
+}
+
 function renderSettings() {
   const st = state.settings;
+  const d = state.device;
   const last = st.lastBackup ? new Date(st.lastBackup).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : 'never';
-  app.innerHTML = `
-    ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
-    <main class="view settings">
-      <section class="card">
-        <h2>Invite a coworker</h2>
-        <p>Texts them the link. They ask to join from the app, and an admin approves their phone.</p>
-        <button class="btn btn-primary btn-block" data-action="invite">${ICON.send} Invite a coworker</button>
-      </section>
+  const schoolBadge = d.admin && state.pendingCount ? `${state.pendingCount} waiting` : d.status === 'pending' ? 'Waiting' : '';
 
-      ${schoolSection()}
+  const invite = `<p>Texts them the link. They ask to join from the app, and an admin approves their phone.</p>
+        <button class="btn btn-primary btn-block" data-action="invite">${ICON.send} Invite a coworker</button>`;
 
-      <details class="card advanced-card"${st.geminiKey ? ' open' : ''}>
-        <summary>Use your own Gemini key</summary>
-        <p class="fine">Not needed if this phone is approved for the school's AI. Your own key is used instead when it's set.</p>
+  const gemini = `<p class="fine">Not needed if this phone is approved for the school's AI. Your own key is used instead when it's set.</p>
         ${st.geminiKey
           ? `<p class="ok-line">Connected to Google Gemini (key ${esc(maskKey(st.geminiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app, free.</p>
              <button class="btn btn-block" data-action="remove-gemini-key">Remove key</button>`
@@ -1245,12 +1247,9 @@ function renderSettings() {
              <button class="btn btn-block" data-action="paste-gemini-key">Paste key</button>`}
         <p class="fine"><strong>Why it's free:</strong> you never give Google a card, so it can't charge you. If you ever hit the free daily limit, it just asks you to wait. Don't turn on billing in AI Studio.</p>
         <p class="fine"><strong>Privacy:</strong> on the free tier, Google may use what you send to improve its products. Breakdowns never include names, but what you dictate is sent as you said it, so leave out last names.</p>
-        <p class="fine">The key stays on this phone and isn't included in backups.</p>
-      </details>
+        <p class="fine">The key stays on this phone and isn't included in backups.</p>`;
 
-      <details class="card advanced-card">
-        <summary>Use ChatGPT instead (costs a little)</summary>
-        ${st.geminiKey ? '<p class="fine">Gemini is set up, so it\'s used instead. Remove the Gemini key to use ChatGPT.</p>' : ''}
+  const chatgpt = `${st.geminiKey ? '<p class="fine">Gemini is set up, so it\'s used instead. Remove the Gemini key to use ChatGPT.</p>' : ''}
         ${st.apiKey
           ? `<p class="ok-line">ChatGPT key saved (${esc(maskKey(st.apiKey))}).</p>
              <button class="btn btn-block" data-action="remove-key">Remove ChatGPT key</button>`
@@ -1265,12 +1264,9 @@ function renderSettings() {
              <button class="btn btn-block" data-action="save-key">Save ChatGPT key</button>`}
         <label class="field model-field"><span class="label">ChatGPT model</span>
           <input id="st-model" value="${esc(st.model || DEFAULT_MODEL)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
-        <button class="btn btn-block" data-action="save-model">Save model</button>
-      </details>
+        <button class="btn btn-block" data-action="save-model">Save model</button>`;
 
-      <details class="card advanced-card"${st.claudeKey ? ' open' : ''}>
-        <summary>Use Claude instead (costs a little)</summary>
-        ${st.geminiKey || st.apiKey ? '<p class="fine">Gemini or ChatGPT is set up, so that\'s used instead. Remove those keys to use Claude.</p>' : ''}
+  const claude = `${st.geminiKey || st.apiKey ? '<p class="fine">Gemini or ChatGPT is set up, so that\'s used instead. Remove those keys to use Claude.</p>' : ''}
         ${st.claudeKey
           ? `<p class="ok-line">Claude key saved (${esc(maskKey(st.claudeKey))}).</p>
              <button class="btn btn-block" data-action="remove-claude-key">Remove Claude key</button>`
@@ -1286,35 +1282,24 @@ function renderSettings() {
         <label class="field model-field"><span class="label">Claude model</span>
           <input id="st-claude-model" value="${esc(st.claudeModel || DEFAULT_CLAUDE_MODEL)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
         <p class="fine">claude-opus-5 writes best. claude-sonnet-5 costs about half as much, claude-haiku-4-5 about a fifth.</p>
-        <button class="btn btn-block" data-action="save-claude-model">Save model</button>
-      </details>
+        <button class="btn btn-block" data-action="save-claude-model">Save model</button>`;
 
-      ${styleSection()}
-
-      <section class="card">
-        <h2>Review card</h2>
-        <p class="fine">With the Key Skills link, the Review tab shows your full card. Change the link and it shows a simpler card with a QR code for the new link.</p>
+  const review = `<p class="fine">With the Key Skills link, the Review tab shows your full card. Change the link and it shows a simpler card with a QR code for the new link.</p>
         <label class="field"><span class="label">Review link</span>
           <input id="st-url" type="url" value="${esc(st.reviewUrl)}" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"></label>
         <label class="field"><span class="label">School name</span>
           <input id="st-school" value="${esc(st.schoolName)}" autocomplete="off"></label>
         <label class="field"><span class="label">Bottom line</span>
           <input id="st-footer" value="${esc(st.reviewFooter)}" autocomplete="off"></label>
-        <button class="btn btn-block" data-action="save-review-settings">Save review card</button>
-      </section>
+        <button class="btn btn-block" data-action="save-review-settings">Save review card</button>`;
 
-      <section class="card">
-        <h2>Backup</h2>
-        <p>Saved breakdowns live on this phone only. Save a backup to Files or iCloud Drive now and then.</p>
+  const backup = `<p>Saved breakdowns live on this phone only. Save a backup to Files or iCloud Drive now and then.</p>
         <p class="fine">Last backup: ${esc(last)} · ${state.items.size} saved</p>
         <button class="btn btn-block" data-action="backup">Save a backup</button>
         <button class="btn btn-block" data-action="restore">Restore from a backup</button>
-        <input id="restore-file" type="file" accept=".json,application/json" hidden>
-      </section>
+        <input id="restore-file" type="file" accept=".json,application/json" hidden>`;
 
-      <section class="card">
-        <h2>Privacy &amp; security</h2>
-        <ul class="steps">
+  const privacy = `<ul class="steps">
           <li>This app can't see anything else on your phone: no contacts, photos, location or other apps. It doesn't ask for any permissions.</li>
           <li>Breakdowns, keys and settings are stored only on this phone. The only thing that leaves it is what you dictate, sent to Gemini when you tap <strong>Break it down</strong> (through the school's server if you joined).</li>
           <li>If you joined the school's AI, the school's server keeps your first name and when you last used the app, so an admin can approve or remove phones. It doesn't keep anything you dictate.</li>
@@ -1322,12 +1307,23 @@ function renderSettings() {
           <li>Backup files contain your breakdowns in plain text, so keep them private.</li>
         </ul>
         <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key, settings and school approval. Nothing else on my phone is touched.</span></label>
-        <button id="wipe-btn" class="btn btn-block btn-danger" data-action="wipe-app" disabled>Wipe App</button>
-      </section>
+        <button id="wipe-btn" class="btn btn-block btn-danger" data-action="wipe-app" disabled>Wipe App</button>`;
 
+  app.innerHTML = `
+    ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
+    <main class="view settings">
+      ${settingsSection('invite', 'Invite a coworker', invite)}
+      ${settingsSection('school', 'School AI', schoolSection(), schoolBadge)}
+      ${settingsSection('gemini', 'Use your own Gemini key', gemini, st.geminiKey ? 'On' : '')}
+      ${settingsSection('chatgpt', 'Use ChatGPT instead (costs a little)', chatgpt, st.apiKey ? 'On' : '')}
+      ${settingsSection('claude', 'Use Claude instead (costs a little)', claude, st.claudeKey ? 'On' : '')}
+      ${settingsSection('style', 'My style', styleSection())}
+      ${settingsSection('review', 'Review card', review)}
+      ${settingsSection('backup', 'Backup', backup)}
+      ${settingsSection('privacy', 'Privacy & security', privacy)}
       <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
     </main>`;
-  $$('textarea', app).forEach(autosize);
+  $$('details[open] textarea', app).forEach(autosize);
   if (state.device.adminExists === null) syncSchool({ force: true });
 }
 
@@ -1347,7 +1343,7 @@ function schoolSection() {
     actions = `<p class="fine">Nobody manages this school's phones yet. If that's your job, tap below on your own phone. The first phone to do it becomes the admin, and the button disappears for everyone else.</p>
       <button class="btn btn-block" data-action="claim-admin">Become the admin</button>`;
   }
-  return `<section class="card"><h2>School AI</h2><p>${line}</p>${actions}</section>`;
+  return `<p>${line}</p>${actions}`;
 }
 
 // Opens Messages with the request typed out; the instructor picks who to send it to.
@@ -1641,9 +1637,7 @@ function styleSection() {
   } else {
     adder = '<button class="btn btn-block" data-action="style-add-example">Add an example</button>';
   }
-  return `<section class="card">
-    <h2>My style</h2>
-    <p class="fine">Breakdowns stay professional and in the same format. This makes them sound like you.</p>
+  return `<p class="fine">Breakdowns stay professional and in the same format. This makes them sound like you.</p>
     <div class="style-row"><span class="label">Tone</span>
       <div class="chips">${chip('tone', 'warm', 'Warm')}${chip('tone', 'plain', 'Matter-of-fact')}${chip('tone', '', 'Either')}</div></div>
     <div class="style-row"><span class="label">Length</span>
@@ -1659,8 +1653,7 @@ function styleSection() {
       <div class="chips">${chip('polish', 'tidy', 'Tidy me up')}${chip('polish', 'close', 'Close to how I write')}</div></div>` : ''}
     <label class="field"><span class="label">Anything else <span class="optional">optional</span></span>
       <textarea id="st-extra" rows="2" placeholder="e.g. Always mention the student's permit hours when I say them.">${esc(state.settings.extra)}</textarea></label>
-    <button class="btn btn-block" data-action="save-style">Save style</button>
-  </section>`;
+    <button class="btn btn-block" data-action="save-style">Save style</button>`;
 }
 
 // The chips save themselves; this keeps the typed fields.
@@ -2016,6 +2009,18 @@ document.addEventListener('input', (e) => {
     useFallbackPaste();
   }
 });
+
+// Remember which Settings sections are unfolded (toggle doesn't bubble, so listen in capture).
+document.addEventListener('toggle', (e) => {
+  const details = e.target;
+  if (!details.matches?.('details[data-section]')) return;
+  if (details.open) {
+    state.openSettings.add(details.dataset.section);
+    $$('textarea', details).forEach(autosize); // sized now that it's visible
+  } else {
+    state.openSettings.delete(details.dataset.section);
+  }
+}, true);
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'restore-file') restoreFrom(e.target);
