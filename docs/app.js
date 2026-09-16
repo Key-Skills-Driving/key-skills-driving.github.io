@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.4.1';
+const VERSION = '3.4.2';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -191,7 +191,7 @@ async function ensureDevice() {
 async function school(path, body, { signal } = {}) {
   const d = await ensureDevice();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  const timer = setTimeout(() => controller.abort(), 60000);
   if (signal?.aborted) controller.abort();
   else signal?.addEventListener('abort', () => controller.abort(), { once: true });
   let res;
@@ -204,7 +204,7 @@ async function school(path, body, { signal } = {}) {
     });
   } catch (err) {
     if (signal?.aborted) throw new Error(CANCELLED);
-    throw new Error(err?.name === 'AbortError' ? 'The school server took too long. Try again.' : "Couldn't reach the school server. Check your signal and try again.");
+    throw new Error(err?.name === 'AbortError' ? 'No answer after 60 seconds. Check your signal and try again.' : "Couldn't reach the school server. Check your signal and try again.");
   } finally {
     clearTimeout(timer);
   }
@@ -544,10 +544,22 @@ let inflight = null;
 let inflightCount = 0;
 
 function startRequest() {
-  inflight?.controller.abort();
-  inflight = { id: ++inflightCount, controller: new AbortController() };
+  if (inflight) {
+    inflight.controller.abort();
+    // Whatever was waiting on the old request must not stay "busy" forever.
+    state.busy = false;
+    if (state.modify) state.modify.busy = false;
+  }
+  inflight = { id: ++inflightCount, controller: new AbortController(), startedAt: Date.now() };
   return inflight;
 }
+
+// A running count on the button, so a slow answer looks slow rather than stuck.
+const elapsedLabel = () => (inflight ? `${Math.round((Date.now() - inflight.startedAt) / 1000)}s` : '');
+setInterval(() => {
+  const el = $('#write-secs');
+  if (el && inflight) el.textContent = elapsedLabel();
+}, 1000);
 
 const isCurrent = (run) => inflight?.id === run.id && !run.controller.signal.aborted;
 
@@ -584,7 +596,7 @@ function writeActions() {
   if (provider) {
     // While it's writing, the same button is the cancel.
     return `<button class="btn btn-primary btn-block btn-tall" data-action="${state.busy ? 'cancel-writing' : 'generate'}">
-      ${state.busy ? '<span class="spinner" aria-hidden="true"></span> Writing… tap to cancel' : `${ICON.zap} Break it down`}
+      ${state.busy ? `<span class="spinner" aria-hidden="true"></span> Writing… <span id="write-secs">${elapsedLabel()}</span> · tap to cancel` : `${ICON.zap} Break it down`}
     </button>
     <p class="hint center">${PROVIDER_NOTE[provider]}</p>`;
   }
@@ -899,7 +911,7 @@ function renderModify(id) {
     : 'tap Edit under the breakdown to change it by hand';
   const action = aiProvider()
     ? `<button class="btn btn-primary btn-block btn-tall" data-action="${m.busy ? 'cancel-modify' : 'run-modify'}">
-        ${m.busy ? '<span class="spinner" aria-hidden="true"></span> Making changes… tap to cancel' : `${ICON.zap} Modify it`}
+        ${m.busy ? `<span class="spinner" aria-hidden="true"></span> Making changes… <span id="write-secs">${elapsedLabel()}</span> · tap to cancel` : `${ICON.zap} Modify it`}
       </button>
       <p class="hint center">Uses your original notes and only changes what you ask.</p>`
     : `<p class="hint">Modify needs one-tap AI. <a href="#/settings">Turn it on in Settings</a> (it's free), or ${byHand}.</p>`;

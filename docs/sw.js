@@ -1,6 +1,6 @@
 // Keeps the app working with no signal. Bump CACHE (and VERSION in app.js) on every release
 // so phones pick up the new files.
-const CACHE = 'lesson-notes-3.4.1';
+const CACHE = 'lesson-notes-3.4.2';
 const ASSETS = [
   './',
   'index.html',

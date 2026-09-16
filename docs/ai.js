@@ -172,7 +172,7 @@ function explain(status, err) {
 // `signal` lets the app cancel a request (New lesson, Cancel) on top of the 90-second timeout.
 function abortable(signal) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 90000);
+  const timer = setTimeout(() => controller.abort(), 60000);
   if (signal?.aborted) controller.abort();
   else signal?.addEventListener('abort', () => controller.abort(), { once: true });
   return { controller, timer };
