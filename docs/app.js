@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.2.0';
+const VERSION = '3.2.1';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -1006,7 +1006,6 @@ function renderItem(id) {
       <label class="field"><span class="label">Breakdown</span>
         <textarea id="i-text" class="big" rows="10" placeholder="Type or dictate a breakdown you use often.">${esc(item?.text)}</textarea></label>
       <label class="check"><input id="i-pinned" type="checkbox"${!item || item.pinned ? ' checked' : ''}><span>Prewritten (keep it at the top)</span></label>
-      <label class="check"><input id="i-style" type="checkbox"${item && state.settings.style.examples.some((e) => e.itemId === item.id) ? ' checked' : ''}><span>Use as an example of my style</span></label>
       <button class="btn btn-block" data-action="copy-edit">${ICON.copy} Copy</button>
       ${item ? `<button class="btn btn-block btn-danger" data-action="delete-item" data-id="${idAttr}">Delete</button>` : ''}
     </main>`;
@@ -1034,9 +1033,6 @@ async function saveItemForm(id) {
     state.draft.result = item.text;
     saveDraft(true);
   }
-  const wasExample = state.settings.style.examples.some((e) => e.itemId === item.id);
-  if ($('#i-style').checked) addStyleExample(item.text, item.id);
-  else if (wasExample) removeStyleExample((e) => e.itemId !== item.id);
   toast('Saved');
   go('/saved', true);
 }
@@ -1437,7 +1433,7 @@ function styleSection() {
       <input id="st-signoff" value="${esc(s.signoff)}" maxlength="${STYLE_LIMITS.signoff}" placeholder="e.g. Coach Eli, Key Skills Driving School" autocomplete="off"></label>
     <div class="style-row"><span class="label">Examples of my writing</span>
       ${examples}
-      <p class="fine">Whenever you fix a breakdown by hand, the app offers to keep it as an example. You can also open any saved breakdown, tap <strong>Edit</strong>, and tick <strong>Use as an example of my style</strong>. Your newest ${STYLE_LIMITS.examples} are used.</p>
+      <p class="fine">These only come from your own writing: whenever you fix a breakdown by hand (tap <strong>Edit</strong> under it, change it, then <strong>Done editing</strong>), the app offers to keep your version as an example. Your newest ${STYLE_LIMITS.examples} are used.</p>
     </div>
     ${s.examples.length ? `<div class="style-row"><span class="label">How closely to follow them</span>
       <div class="chips">${chip('polish', 'tidy', 'Tidy me up')}${chip('polish', 'close', 'Close to how I write')}</div></div>` : ''}
