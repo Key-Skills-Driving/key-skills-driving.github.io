@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.8.0';
+const VERSION = '3.8.1';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -1215,8 +1215,8 @@ function maskKey(key) {
 }
 
 // Every Settings section is folded to its title until tapped. What's open survives a re-render.
-function settingsSection(id, title, body, badge = '') {
-  return `<details class="card settings-section" data-section="${id}"${state.openSettings.has(id) ? ' open' : ''}>
+function settingsSection(id, title, body, badge = '', sub = false) {
+  return `<details class="${sub ? 'sub-section' : 'card settings-section'} fold" data-section="${id}"${state.openSettings.has(id) ? ' open' : ''}>
     <summary><span>${title}</span>${badge ? `<span class="pill pill-gold">${esc(badge)}</span>` : ''}</summary>
     <div class="section-body">${body}</div>
   </details>`;
@@ -1231,8 +1231,7 @@ function renderSettings() {
   const invite = `<p>Texts them the link. They ask to join from the app, and an admin approves their phone.</p>
         <button class="btn btn-primary btn-block" data-action="invite">${ICON.send} Invite a coworker</button>`;
 
-  const gemini = `<p class="fine">Not needed if this phone is approved for the school's AI. Your own key is used instead when it's set.</p>
-        ${st.geminiKey
+  const gemini = `${st.geminiKey
           ? `<p class="ok-line">Connected to Google Gemini (key ${esc(maskKey(st.geminiKey))}). <strong>Break it down</strong> now writes the breakdown right in the app, free.</p>
              <button class="btn btn-block" data-action="remove-gemini-key">Remove key</button>`
           : `<p>Lets <strong>Break it down</strong> write the breakdown right in the app, free, using Google's Gemini.</p>
@@ -1309,14 +1308,19 @@ function renderSettings() {
         <label class="check wipe-check"><input id="wipe-ok" type="checkbox"><span>I understand <strong>Wipe App</strong> deletes this app's saved breakdowns, AI key, settings and school approval. Nothing else on my phone is touched.</span></label>
         <button id="wipe-btn" class="btn btn-block btn-danger" data-action="wipe-app" disabled>Wipe App</button>`;
 
+  // The three key options sit under one row; the badge names whichever one is in use.
+  const keyBadge = st.geminiKey ? 'Gemini on' : st.apiKey ? 'ChatGPT on' : st.claudeKey ? 'Claude on' : '';
+  const keys = `<p class="fine">Not needed if this phone is approved for the school's AI. A key added here is used instead. Gemini is free; ChatGPT and Claude cost a little.</p>
+    ${settingsSection('gemini', 'Google Gemini (free)', gemini, st.geminiKey ? 'On' : '', true)}
+    ${settingsSection('chatgpt', 'ChatGPT (costs a little)', chatgpt, st.apiKey ? 'On' : '', true)}
+    ${settingsSection('claude', 'Claude (costs a little)', claude, st.claudeKey ? 'On' : '', true)}`;
+
   app.innerHTML = `
     ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
     <main class="view settings">
       ${settingsSection('invite', 'Invite a coworker', invite)}
       ${settingsSection('school', 'School AI', schoolSection(), schoolBadge)}
-      ${settingsSection('gemini', 'Use your own Gemini key', gemini, st.geminiKey ? 'On' : '')}
-      ${settingsSection('chatgpt', 'Use ChatGPT instead (costs a little)', chatgpt, st.apiKey ? 'On' : '')}
-      ${settingsSection('claude', 'Use Claude instead (costs a little)', claude, st.claudeKey ? 'On' : '')}
+      ${settingsSection('keys', 'Use your own AI key', keys, keyBadge)}
       ${settingsSection('style', 'My style', styleSection())}
       ${settingsSection('review', 'Review card', review)}
       ${settingsSection('backup', 'Backup', backup)}

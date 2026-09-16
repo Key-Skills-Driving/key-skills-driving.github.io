@@ -662,23 +662,20 @@ textarea.big { min-height: 170px; }
 .settings .steps li { margin: 6px 0; }
 .settings a { font-weight: 600; }
 .ok-line { color: var(--good); font-weight: 600; }
-/* Settings sections: a title row you tap to unfold. */
-.settings-section { padding: 0; }
-.settings-section summary {
+/* Settings sections: a title row you tap to unfold. Sub-sections are the same inside a section. */
+.fold summary {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 15px 16px;
-  font-size: 18px;
   font-weight: 700;
   list-style: none;
   cursor: pointer;
   -webkit-user-select: none;
   user-select: none;
 }
-.settings-section summary::-webkit-details-marker { display: none; }
-.settings-section summary > span:first-child { flex: 1; min-width: 0; }
-.settings-section summary::after {
+.fold summary::-webkit-details-marker { display: none; }
+.fold summary > span:first-child { flex: 1; min-width: 0; }
+.fold summary::after {
   content: "";
   flex: none;
   width: 9px;
@@ -689,9 +686,15 @@ textarea.big { min-height: 170px; }
   transform: rotate(45deg);
   transition: transform 0.15s;
 }
-.settings-section[open] summary::after { transform: rotate(225deg); margin-bottom: -3px; }
-.section-body { padding: 2px 16px 16px; }
+.fold[open] > summary::after { transform: rotate(225deg); margin-bottom: -3px; }
+.settings-section { padding: 0; }
+.settings-section > summary { padding: 15px 16px; font-size: 18px; }
+.settings-section > .section-body { padding: 2px 16px 16px; }
 .section-body > :first-child { margin-top: 0; }
+.sub-section { border-top: 1px solid var(--line); }
+.sub-section > summary { padding: 13px 0; font-size: 16px; }
+.sub-section > .section-body { padding: 0 0 14px; }
+.sub-section:last-child > .section-body { padding-bottom: 4px; }
 .model-field { margin-top: 16px; }
 
 /* ---------- review card (always light, so it scans well) ---------- */
