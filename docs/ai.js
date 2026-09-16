@@ -43,8 +43,8 @@ function styleLines(style) {
   const lines = [];
   if (s.tone === 'warm') lines.push("- Tone: warm and encouraging, like a coach who is on the student's side.");
   if (s.tone === 'plain') lines.push('- Tone: plain and matter-of-fact. Encouraging where it is earned, without gushing.');
-  if (s.length === 'short') lines.push('- Length: brief. One short line per bullet, about 70 to 110 words in all.');
-  if (s.length === 'detailed') lines.push('- Length: fuller. A complete sentence with the specifics for each bullet, about 150 to 220 words in all.');
+  if (s.length === 'short') lines.push('- Length: brief. A short message and short bullets, about 70 to 110 words in all.');
+  if (s.length === 'detailed') lines.push('- Length: fuller. A message that walks through each skill with its specifics, about 150 to 220 words in all.');
   if (s.signoff) lines.push(`- End with this sign-off on its own line, exactly as written: ${s.signoff}`);
   if (s.examples.length) {
     lines.push(s.polish === 'close'
@@ -64,14 +64,14 @@ export function systemPrompt(extra = '', style = null) {
     'Covered today:',
     '- <skill or activity>',
     '',
-    'How it went:',
-    '- <Skill>: <specifically what the student did well or struggled with>',
+    "<A personal message from the instructor about how the lesson went: one to three short paragraphs, written as if to the student and their parents, in the instructor's own voice. Say specifically what went well and what needs work. No heading for this part.>",
     '',
     'Focus for next lesson:',
     '- <what to practice next>',
     '',
     'Rules:',
-    '- Start straight with "Covered today:". No title, date line or opening sentence: the detail belongs under "How it went", and it should not be repeated anywhere else.',
+    '- Start straight with "Covered today:". No title or date line. Keep that list bare: skill names only, no detail.',
+    '- The message is the heart of the breakdown. Talk the lesson through the way the instructor would in person, with the specifics from the notes. Never restate the "Covered today" list inside it.',
     '- Use only what the instructor said or clearly implied. Never invent maneuvers, places, speeds or results.',
     '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
     '- Professional, encouraging and specific, in plain language a parent understands.',
