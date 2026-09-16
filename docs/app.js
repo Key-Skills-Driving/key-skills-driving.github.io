@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.5.0';
+const VERSION = '3.6.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -32,7 +32,8 @@ const findKey = (text) => text.match(GEMINI_KEY)?.[0].replace(/\.+$/, '') || '';
 const SCHOOL_API = location.hostname === 'localhost' ? 'http://localhost:8787' : 'https://ksds-lessons.ksds-lessons-worker.workers.dev';
 // This phone's identity on the school server: made up on this phone, approved by an admin once.
 // status: none | pending | approved | removed. adminExists is null until the server's been asked.
-const defaultDevice = () => ({ id: '', token: '', status: 'none', name: '', admin: false, adminExists: null, push: false, pushEndpoint: '' });
+// owner = the school's one master admin: can't be removed, and only they can pass the role on.
+const defaultDevice = () => ({ id: '', token: '', status: 'none', name: '', admin: false, owner: false, adminExists: null, push: false, pushEndpoint: '' });
 // Public half of the school server's notification signing key (the private half lives on the server).
 const VAPID_PUBLIC_KEY = 'BGtbayMvDc_DHKp20vPVqWRE64MFyZ0uPp7NOvhMYcrA1Anga8AqZSST2tMsBWoamqHDOEuQoMWOn9MTq9DGMX0';
 
@@ -41,6 +42,7 @@ const state = {
   settings: defaultSettings(),
   device: defaultDevice(),
   phones: null, // the admin's list from the school server
+  transfer: null, // { id, name }: the master admin is about to pass the role on
   pendingCount: 0, // phones waiting for an admin's approval (admins only)
   installPrompt: null, // Android's install prompt, held until the Install button is tapped
   justInstalled: false,
@@ -221,7 +223,7 @@ async function school(path, body, { signal } = {}) {
 
 function applyMe(me) {
   Object.assign(state.device, {
-    status: me.status || 'none', name: me.name || state.device.name, admin: !!me.admin, adminExists: me.adminExists ?? state.device.adminExists,
+    status: me.status || 'none', name: me.name || state.device.name, admin: !!me.admin, owner: !!me.owner, adminExists: me.adminExists ?? state.device.adminExists,
   });
   if (typeof me.push === 'boolean') state.device.push = me.push;
   saveDevice();
@@ -400,7 +402,7 @@ function installDemo(kind) {
         <div class="demo-row">${android ? 'Desktop site' : 'Print'}</div>
       </div>
       <div class="demo-add"><span>Cancel</span><b>${row}</b><span class="hit">${last}</span></div>
-      <div class="demo-home"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><span class="demo-icon"><img src="icons/icon-192.png" alt=""><b>KSDS Lessons</b></span></div>
+      <div class="demo-home"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><span class="demo-icon"><img src="icons/icon-192.png" alt=""><b>KSDS</b></span></div>
       <div class="demo-bar"><span class="demo-trigger">${trigger}</span></div>
       <div class="demo-tap"></div>
     </div></div>
@@ -1306,7 +1308,7 @@ function schoolSection() {
   const d = state.device;
   const as = d.name ? ` as <strong>${esc(d.name)}</strong>` : '';
   const line = {
-    approved: `This phone is approved${as}. <strong>Break it down</strong> uses the school's free AI.`,
+    approved: `This phone is approved${as}${d.owner ? ' and is the <strong>master admin</strong>' : ''}. <strong>Break it down</strong> uses the school's free AI.`,
     pending: `This phone asked to join${as} and is waiting for an admin to approve it.`,
     removed: 'This phone was removed. You can ask to join again on the Break down tab.',
     none: "This phone hasn't joined yet. Ask to join on the Break down tab.",
@@ -1451,7 +1453,19 @@ function phonesBody() {
   const waiting = phones.filter((p) => p.status === 'pending');
   const approved = phones.filter((p) => p.status === 'approved');
   const me = state.device.id;
-  const tags = (p) => `${p.admin ? '<span class="pill pill-gold">Admin</span>' : ''}${p.id === me ? '<span class="pill">This phone</span>' : ''}`;
+  const iAmOwner = state.device.owner;
+  const tags = (p) => `${p.owner ? '<span class="pill pill-gold">Master admin</span>' : p.admin ? '<span class="pill pill-gold">Admin</span>' : ''}${p.id === me ? '<span class="pill">This phone</span>' : ''}`;
+  // Only the master admin sees this, and it takes a tick box plus a confirmation to go through.
+  const t = state.transfer;
+  const transferCard = t ? `<section class="card transfer-card">
+      <h2 class="card-title">Pass master admin to ${esc(t.name)}?</h2>
+      <p>${esc(t.name)} becomes the master admin. You stay an admin, but only ${esc(t.name)} will be able to pass the role on, and no admin can remove them.</p>
+      <label class="check"><input id="transfer-ok" type="checkbox"><span>I understand, and this is what I want.</span></label>
+      <div class="two">
+        <button id="transfer-btn" class="btn btn-primary" data-action="transfer-confirm" disabled>Pass it on</button>
+        <button class="btn" data-action="transfer-cancel">Cancel</button>
+      </div>
+    </section>` : '';
   const waitingCard = (p) => `<div class="card phone-card">
       <div class="phone-name">${esc(p.name)}</div>
       <div class="phone-meta">Asked ${esc(whenLabel(p.created_at))}</div>
@@ -1463,12 +1477,12 @@ function phonesBody() {
   const approvedCard = (p) => `<div class="card phone-card">
       <div class="phone-name">${esc(p.name)} ${tags(p)}</div>
       <div class="phone-meta">${p.last_seen ? `Last used ${esc(whenLabel(p.last_seen))}` : 'Not used yet'}</div>
-      ${p.id === me ? '' : `<div class="two">
+      ${p.id === me || p.owner ? '' : `<div class="two">
         <button class="btn" data-action="toggle-admin" data-id="${esc(p.id)}" data-admin="${p.admin ? '0' : '1'}">${p.admin ? 'Remove admin' : 'Make admin'}</button>
         <button class="btn btn-danger-soft" data-action="remove-phone" data-id="${esc(p.id)}" data-name="${esc(p.name)}">Remove</button>
-      </div>`}
+      </div>${iAmOwner ? `<button class="btn btn-block btn-outline" data-action="transfer-start" data-id="${esc(p.id)}" data-name="${esc(p.name)}">Make master admin</button>` : ''}`}
     </div>`;
-  return `
+  return `${transferCard}
     <section class="card">
       <h2 class="card-title">School AI key</h2>
       ${keySet ? '<p class="ok-line">Set. Approved phones use it.</p>' : "<p>Not set yet. Approved phones can't write breakdowns until it is.</p>"}
@@ -1684,12 +1698,17 @@ function wipeWarning() {
     "Nothing else on your phone is touched. This can't be undone.",
   ];
   // An admin who wipes their phone can't manage phones any more, so say so while there's time.
-  if (state.device.admin) lines.push('', "You're an admin. Make someone else an admin first, or nobody will be able to approve phones.");
+  if (state.device.admin && !state.device.owner) lines.push('', "You're an admin. Make sure another admin is around to approve phones.");
   return lines.join('\n');
 }
 
 async function wipeApp() {
   if (!$('#wipe-ok')?.checked) return;
+  // A wiped phone can't sign in again, so the master role would be stranded. Pass it on first.
+  if (state.device.owner) {
+    alert("You're the master admin. Pass the role to another phone first (Settings › Manage phones › Make master admin), then wipe.");
+    return;
+  }
   if (!confirm(wipeWarning())) return;
   try {
     await db.clear('items');
@@ -1828,6 +1847,30 @@ const actions = {
   'push-on': (el) => enablePush(el),
   'push-off': () => disablePush(),
   'approve-phone': (el) => phoneAction('/admin/approve', { id: el.dataset.id }, 'Approved. They can use it now.'),
+  'transfer-start': (el) => {
+    state.transfer = { id: el.dataset.id, name: el.dataset.name };
+    showPhones(state.phones);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  },
+  'transfer-cancel': () => {
+    state.transfer = null;
+    showPhones(state.phones);
+  },
+  'transfer-confirm': async () => {
+    const t = state.transfer;
+    if (!t || !$('#transfer-ok')?.checked) return;
+    if (!confirm(`Pass master admin to ${t.name}?\n\nAfter this, only ${t.name} can pass it on. You can't take it back yourself.`)) return;
+    try {
+      showPhones(await school('/admin/transfer', { id: t.id, confirm: true }));
+      state.device.owner = false;
+      saveDevice();
+      state.transfer = null;
+      showPhones(state.phones);
+      toast(`${t.name} is the master admin now`);
+    } catch (err) {
+      toast(err.message);
+    }
+  },
   'remove-phone': (el) => {
     const pending = !!el.dataset.pending;
     const question = pending ? `Decline ${el.dataset.name}'s request?` : `Remove ${el.dataset.name}'s phone? They'll have to ask to join again.`;
@@ -1940,8 +1983,9 @@ document.addEventListener('input', (e) => {
 
 document.addEventListener('change', (e) => {
   if (e.target.id === 'restore-file') restoreFrom(e.target);
-  // Wipe App stays greyed out until the box is ticked.
+  // Wipe App and Pass it on stay greyed out until their box is ticked.
   if (e.target.id === 'wipe-ok') $('#wipe-btn').disabled = !e.target.checked;
+  if (e.target.id === 'transfer-ok') $('#transfer-btn').disabled = !e.target.checked;
 });
 
 // Hide the tab bar while the keyboard is up so it doesn't float over what you're typing.

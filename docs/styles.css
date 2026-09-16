@@ -383,18 +383,18 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
   position: absolute;
   inset: 0;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(0, 1fr)); /* minmax(0) so the tiny label can't widen the columns */
   align-content: start;
-  gap: 8px 6px;
-  padding: 14px 10px;
+  gap: 9px 8px;
+  padding: 16px 12px;
   background: radial-gradient(120% 90% at 20% 10%, #3a5ba0 0%, #1d2f63 45%, #0e1633 100%);
   opacity: 0;
   animation: demoHome var(--cycle) infinite;
 }
-.demo-home i { display: block; aspect-ratio: 1; border-radius: 6px; background: rgba(255, 255, 255, 0.85); }
-.demo-icon { display: grid; justify-items: center; gap: 2px; transform: scale(0); animation: demoPop var(--cycle) infinite; }
-.demo-icon img { width: 100%; border-radius: 6px; }
-.demo-icon b { font-size: 5px; color: #fff; white-space: nowrap; }
+.demo-home i { display: block; min-width: 0; aspect-ratio: 1; border-radius: 6px; background: rgba(255, 255, 255, 0.85); }
+.demo-icon { display: grid; min-width: 0; justify-items: center; gap: 2px; transform: scale(0); animation: demoPop var(--cycle) infinite; }
+.demo-icon img { display: block; width: 100%; max-width: 100%; aspect-ratio: 1; border-radius: 6px; }
+.demo-icon b { max-width: 100%; overflow: hidden; font-size: 5px; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
 .demo-tap {
   position: absolute;
   width: 22px;
@@ -549,6 +549,9 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 .phone-name { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 17px; font-weight: 700; }
 .phone-meta { color: var(--ink-3); font-size: 14px; }
 .phone-card .two { margin-top: 10px; }
+.phone-card .two + .btn-block { margin-top: 10px; }
+.transfer-card { margin-bottom: 14px; border: 2px solid var(--gold); }
+.transfer-card p { margin: 0 0 4px; }
 .btn-danger-soft { color: var(--danger); }
 
 .label.big-label { margin-bottom: 10px; color: var(--ink); font-size: 19px; }

@@ -74,6 +74,7 @@ async function handle(request, env, ctx) {
     case 'POST /admin/approve': await requireAdmin(phone); return setStatus(env, input.id, 'approved');
     case 'POST /admin/remove': await requireAdmin(phone); return removePhone(env, phone, input.id);
     case 'POST /admin/role': await requireAdmin(phone); return setAdmin(env, phone, input.id, !!input.admin);
+    case 'POST /admin/transfer': await requireAdmin(phone); return transferOwner(env, phone, input.id, input.confirm);
     case 'POST /admin/key': await requireAdmin(phone); return saveKey(env, input.key);
     default: throw new Refusal(404, 'Not found.');
   }
@@ -118,7 +119,7 @@ async function adminExists(env) {
 
 async function me(phone, env) {
   const r = phone.row;
-  return { status: r?.status || 'none', name: r?.name || '', admin: !!(r?.admin && r.status === 'approved'), adminExists: await adminExists(env), push: !!r?.push };
+  return { status: r?.status || 'none', name: r?.name || '', admin: !!(r?.admin && r.status === 'approved'), owner: !!(r?.owner && r.status === 'approved'), adminExists: await adminExists(env), push: !!r?.push };
 }
 
 async function join(phone, input, env, ctx) {
@@ -205,10 +206,26 @@ async function claimAdmin(phone, input, env) {
   if (await adminExists(env)) throw new Refusal(403, 'This school already has an admin.');
   const name = text(input.name, MAX.name) || 'Admin';
   const now = Date.now();
-  await env.DB.prepare(`INSERT INTO phones (id, token_hash, name, status, admin, created_at, approved_at) VALUES (?, ?, ?, 'approved', 1, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET status = 'approved', admin = 1, name = excluded.name, approved_at = excluded.approved_at`)
+  // The first admin is also the master admin.
+  await env.DB.prepare(`INSERT INTO phones (id, token_hash, name, status, admin, owner, created_at, approved_at) VALUES (?, ?, ?, 'approved', 1, 1, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET status = 'approved', admin = 1, owner = 1, name = excluded.name, approved_at = excluded.approved_at`)
     .bind(phone.id, phone.hash, name, now, now).run();
-  return { status: 'approved', name, admin: true, adminExists: true };
+  return { status: 'approved', name, admin: true, owner: true, adminExists: true };
+}
+
+// Passing on master admin: only the master admin can, only to an approved phone, and only with
+// the confirm flag the app sets after the tick box and the confirmation. Both rows change together.
+async function transferOwner(env, phone, id, confirmed) {
+  if (!phone.row?.owner) throw new Refusal(403, 'Only the master admin can pass it on.');
+  if (confirmed !== true) throw new Refusal(400, 'Tick the box to confirm first.');
+  if (String(id) === phone.id) throw new Refusal(400, "You're already the master admin.");
+  const target = await env.DB.prepare('SELECT id, status FROM phones WHERE id = ?').bind(String(id)).first();
+  if (!target || target.status !== 'approved') throw new Refusal(404, 'Approve that phone first.');
+  await env.DB.batch([
+    env.DB.prepare('UPDATE phones SET owner = 0 WHERE id = ?').bind(phone.id),
+    env.DB.prepare('UPDATE phones SET owner = 1, admin = 1 WHERE id = ?').bind(target.id),
+  ]);
+  return listPhones(env);
 }
 
 async function requireAdmin(phone) {
@@ -216,8 +233,12 @@ async function requireAdmin(phone) {
 }
 
 async function listPhones(env) {
-  const { results } = await env.DB.prepare("SELECT id, name, status, admin, created_at, approved_at, last_seen FROM phones WHERE status != 'removed' ORDER BY status = 'pending' DESC, created_at DESC").all();
-  return { phones: results.map((p) => ({ ...p, admin: !!p.admin })), keySet: !!(await schoolKey(env)) };
+  const { results } = await env.DB.prepare("SELECT id, name, status, admin, owner, created_at, approved_at, last_seen FROM phones WHERE status != 'removed' ORDER BY status = 'pending' DESC, owner DESC, created_at DESC").all();
+  return { phones: results.map((p) => ({ ...p, admin: !!p.admin, owner: !!p.owner })), keySet: !!(await schoolKey(env)) };
+}
+
+async function isOwner(env, id) {
+  return !!(await env.DB.prepare('SELECT 1 FROM phones WHERE id = ? AND owner = 1').bind(String(id)).first());
 }
 
 async function setStatus(env, id, status) {
@@ -231,6 +252,7 @@ async function otherAdmins(env, id) {
 }
 
 async function removePhone(env, phone, id) {
+  if (await isOwner(env, id)) throw new Refusal(403, "The master admin can't be removed. They can pass the role on from their own phone.");
   const target = await env.DB.prepare('SELECT admin FROM phones WHERE id = ?').bind(String(id)).first();
   if (target?.admin && !(await otherAdmins(env, id))) throw new Refusal(409, "You can't remove the only admin. Make someone else an admin first.");
   await env.DB.prepare("UPDATE phones SET status = 'removed', admin = 0 WHERE id = ?").bind(String(id)).run();
@@ -238,6 +260,7 @@ async function removePhone(env, phone, id) {
 }
 
 async function setAdmin(env, phone, id, admin) {
+  if (!admin && (await isOwner(env, id))) throw new Refusal(403, 'The master admin is always an admin.');
   if (!admin && !(await otherAdmins(env, id))) throw new Refusal(409, "There has to be at least one admin.");
   const res = await env.DB.prepare("UPDATE phones SET admin = ? WHERE id = ? AND status = 'approved'").bind(admin ? 1 : 0, String(id)).run();
   if (!res.meta.changes) throw new Refusal(404, 'Approve that phone first.');

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS phones (
   name TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending', -- pending | approved | removed
   admin INTEGER NOT NULL DEFAULT 0,
+  owner INTEGER NOT NULL DEFAULT 0, -- the one master admin: can't be removed, and only they can pass it on
   created_at INTEGER NOT NULL,
   approved_at INTEGER,
   last_seen INTEGER,
