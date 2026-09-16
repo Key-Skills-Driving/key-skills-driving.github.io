@@ -6,7 +6,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.0.1';
+const VERSION = '3.1.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -39,6 +39,8 @@ const state = {
   device: defaultDevice(),
   phones: null, // the admin's list from the school server
   pendingCount: 0, // phones waiting for an admin's approval (admins only)
+  installPrompt: null, // Android's install prompt, held until the Install button is tapped
+  justInstalled: false,
   draft: { raw: '', result: '', savedId: null }, // the breakdown in progress on the first tab
   modify: null, // { id, change, result, busy }: asking the AI to change a saved breakdown
   busy: false,
@@ -328,16 +330,103 @@ function tabbar(active) {
   </div></nav>`;
 }
 
-// On an iPhone, anything set up in a Safari tab stays in Safari, so install first.
-function inSafariNotInstalled() {
-  const standalone = navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  return ios && !standalone;
+// ---------- getting the app onto the phone ----------
+
+function platform() {
+  const ua = navigator.userAgent;
+  if (/iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+  if (/Android/i.test(ua)) return 'android';
+  return 'other';
 }
 
+const isInstalled = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+
+// On an iPhone, anything set up in a Safari tab stays in Safari, so install first.
+const inSafariNotInstalled = () => platform() === 'ios' && !isInstalled();
+
+// The walkthrough takes over the first tab until the app is installed or "Not now" is tapped.
+let installDismissed = false;
+const showInstallScreen = () => !isInstalled() && !installDismissed && platform() !== 'other';
+
+// Android browsers hand the page an install prompt it can show on its own button.
+addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  state.installPrompt = e;
+  if (parseRoute().name === 'write' && showInstallScreen()) render();
+});
+addEventListener('appinstalled', () => {
+  state.installPrompt = null;
+  state.justInstalled = true;
+  if (parseRoute().name === 'write') render();
+});
+
+const SHARE_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v13"/></svg>';
+const PLUS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M12 8v8M8 12h8"/></svg>';
+const DOTS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="19" cy="12" r="2" fill="currentColor" stroke="none"/></svg>';
+const VDOTS_GLYPH = '<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="2" fill="currentColor" stroke="none"/><circle cx="12" cy="19" r="2" fill="currentColor" stroke="none"/></svg>';
+
+function installScreen() {
+  const ios = platform() === 'ios';
+  const icon = '<img class="install-icon" src="icons/icon-192.png" width="72" height="72" alt="">';
+  let body;
+  if (state.justInstalled) {
+    body = `${icon}
+      <h2>Installed</h2>
+      <p>From now on, open <strong>KSDS Lessons</strong> from the icon on your Home Screen.</p>
+      <button class="btn btn-block" data-action="dismiss-install">Keep going here for now</button>`;
+  } else if (ios) {
+    body = `${icon}
+      <h2>Add this app to your Home Screen</h2>
+      <p>Three taps, then it opens like any other app.</p>
+      <ol class="install-steps">
+        <li><span class="num">1</span><div><strong>Tap Share</strong> in the bar at the bottom of the screen.<span class="fine">It's the square with an arrow. If you see ${DOTS_GLYPH} instead, tap that first, then <strong>Share</strong>.</span></div><span class="key">${SHARE_GLYPH}</span></li>
+        <li><span class="num">2</span><div><strong>Tap Add to Home Screen.</strong><span class="fine">It's in the list. Scroll up a little if you don't see it.</span>
+          <div class="sheet-demo"><div>Copy</div><div>Add to Reading List</div><div class="hit">Add to Home Screen ${PLUS_GLYPH}</div><div>Print</div></div></div></li>
+        <li><span class="num">3</span><div><strong>Tap Add</strong>, top right. Then open the new <strong>KSDS Lessons</strong> icon.</div></li>
+      </ol>
+      <button class="link-btn" data-action="dismiss-install">Not now, keep using it in Safari</button>
+      <p class="fine center">Anything you set up here in Safari stays in Safari and won't carry over.</p>`;
+  } else if (state.installPrompt) {
+    body = `${icon}
+      <h2>Install this app</h2>
+      <p>Then it opens from your Home Screen like any other app. It's free and takes a few seconds.</p>
+      <button class="btn btn-primary btn-block btn-tall" data-action="install-app">Install</button>
+      <button class="link-btn" data-action="dismiss-install">Not now</button>`;
+  } else {
+    body = `${icon}
+      <h2>Add this app to your Home Screen</h2>
+      <p>Two taps, then it opens like any other app.</p>
+      <ol class="install-steps">
+        <li><span class="num">1</span><div><strong>Tap the menu</strong> at the top right of the browser.</div><span class="key">${VDOTS_GLYPH}</span></li>
+        <li><span class="num">2</span><div><strong>Tap Add to Home screen</strong> (or <strong>Install app</strong>), then <strong>Install</strong>.<span class="fine">Samsung's browser: tap the ≡ menu, then <strong>Add page to</strong>, then <strong>Home screen</strong>.</span></div></li>
+      </ol>
+      <p class="fine">Don't see either? Tap the menu and choose <strong>Open in Chrome</strong> first, then try again.</p>
+      <button class="link-btn" data-action="dismiss-install">Not now</button>`;
+  }
+  const arrow = ios && !state.justInstalled
+    ? '<div class="install-arrow" aria-hidden="true"><span>Share is down here</span><svg viewBox="0 0 24 24"><path d="M12 3v17M5 13l7 7 7-7"/></svg></div>'
+    : '';
+  return `${header({ title: 'KSDS Lessons' })}
+    <main class="view install"><section class="card install-card">${body}</section></main>
+    ${arrow}`;
+}
+
+async function installApp() {
+  const p = state.installPrompt;
+  if (!p) return;
+  state.installPrompt = null;
+  p.prompt();
+  const { outcome } = await p.userChoice.catch(() => ({ outcome: 'dismissed' }));
+  if (outcome !== 'accepted') render(); // they backed out: back to the instructions
+}
+
+// A reminder for anyone who tapped "Not now".
 function installBanner() {
-  if (!inSafariNotInstalled()) return '';
-  return `<div class="banner banner-gold"><div><strong>Add this to your Home Screen first.</strong> In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Then open it from the new icon. Anything set up here in Safari stays in Safari.</div></div>`;
+  if (isInstalled() || platform() === 'other') return '';
+  const how = platform() === 'ios'
+    ? 'In Safari, tap <strong>Share</strong>, then <strong>Add to Home Screen</strong>. Anything set up here in Safari stays in Safari.'
+    : 'Tap the browser menu, then <strong>Add to Home screen</strong>.';
+  return `<div class="banner banner-gold"><div><strong>Add this app to your Home Screen.</strong> ${how}</div><button class="btn btn-small" data-action="show-install">Show me</button></div>`;
 }
 
 // First-run help for someone new: ask the school's admin to approve this phone, once.
@@ -413,6 +502,10 @@ function backupBanner() {
 
 function renderWrite() {
   const d = state.draft;
+  if (showInstallScreen()) {
+    app.innerHTML = installScreen();
+    return;
+  }
   app.innerHTML = `
     ${header({ title: 'Lesson Breakdown', right: settingsLink })}
     <main class="view with-tabs">
@@ -1465,6 +1558,16 @@ const actions = {
     render();
   },
   invite: () => inviteCoworker(),
+  'install-app': () => installApp(),
+  'dismiss-install': () => {
+    installDismissed = true;
+    state.justInstalled = false;
+    render();
+  },
+  'show-install': () => {
+    installDismissed = false;
+    go('/');
+  },
   join: (el) => joinSchool(el),
   'check-approval': (el) => checkApproval(el),
   'claim-admin': (el) => claimAdmin(el),

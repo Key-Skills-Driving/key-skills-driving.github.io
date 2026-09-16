@@ -18,9 +18,9 @@ Deploy with `npx wrangler deploy` from `worker/`. For local testing, `wrangler d
 - **Private:** everything stays on the phone (IndexedDB). API keys only leave the phone to call Google or OpenAI, and aren't included in backups. Breakdowns never use names (the student is always "the student"). On Gemini's free tier Google may use what's sent to improve its products, so the app suggests leaving last names out of the dictation.
 - **Screen stays on** while you dictate, while a breakdown is being written, and while the review card is showing.
 
-## Install on iPhone
+## Installing
 
-Open the site in Safari, tap **Share**, then **Add to Home Screen**. Use the installed app, not the Safari tab: iOS keeps their storage separate.
+Opening the link on a phone shows a walkthrough until the app is installed. iPhone: **Share → Add to Home Screen** (Apple offers no shorter route), with an arrow pointing at Safari's bar. Android: an **Install** button that triggers the browser's own install prompt, with menu instructions as the fallback for browsers that don't offer one. Use the installed app on iPhone, not the Safari tab: iOS keeps their storage separate. On Android the two share storage.
 
 ## Development
 
