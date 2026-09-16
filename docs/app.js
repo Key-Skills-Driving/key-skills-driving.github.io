@@ -1,12 +1,12 @@
 import { db } from './db.js';
 import {
   DEFAULT_MODEL, systemPrompt, userMessage, modifyMessage, copyPrompt, looksLikeOurPrompt, cleanReply,
-  writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey,
+  writeWithChatGPT, checkKey, writeWithGemini, checkGeminiKey, normalizeStyle, styleIsSet, STYLE_LIMITS,
 } from './ai.js';
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.1.0';
+const VERSION = '3.2.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -19,7 +19,8 @@ const REVIEW_DEFAULTS = {
 };
 
 // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
-const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', ...REVIEW_DEFAULTS });
+// style: how this instructor likes breakdowns written (tone, length, sign-off, examples of their writing).
+const defaultSettings = () => ({ lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, extra: '', style: normalizeStyle({}), ...REVIEW_DEFAULTS });
 const MAX_BACKUP_BYTES = 20 * 1024 * 1024;
 const APP_URL = new URL('./', location.href).href;
 // Google issues Gemini keys in two shapes: the older AIza… and the newer AQ.… ones.
@@ -534,11 +535,11 @@ const PROVIDER_NOTE = { gemini: 'Free, with Google Gemini', school: 'Free, throu
 
 // Writes a breakdown (or a modified one) with whichever AI this phone uses.
 async function askAI({ raw, current, change }) {
-  const { geminiKey, apiKey, model, extra } = state.settings;
+  const { geminiKey, apiKey, model, extra, style } = state.settings;
   const modifying = current !== undefined;
   if (aiProvider() === 'school') {
     try {
-      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra });
+      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra, style });
       return data.text;
     } catch (err) {
       // Approval can be taken away; find out so the join card comes back.
@@ -546,7 +547,7 @@ async function askAI({ raw, current, change }) {
       throw err;
     }
   }
-  const system = systemPrompt(extra);
+  const system = systemPrompt(extra, style);
   const user = modifying ? modifyMessage({ raw, current, change }) : userMessage({ raw });
   return aiProvider() === 'gemini'
     ? writeWithGemini({ apiKey: geminiKey, system, user })
@@ -607,6 +608,7 @@ function refreshWrite({ scrollToResult = false } = {}) {
 function setResult(text) {
   const d = state.draft;
   d.result = text;
+  d.aiText = text; // what the AI wrote, so a hand edit can be told apart later
   d.savedId = null;
   state.editingResult = false;
   saveDraft(true);
@@ -661,7 +663,7 @@ async function generate() {
 async function copyForAI(which) {
   if (needRaw()) return;
   const ai = AI_APPS[which];
-  const prompt = copyPrompt({ raw: state.draft.raw, extra: state.settings.extra });
+  const prompt = copyPrompt({ raw: state.draft.raw, extra: state.settings.extra, style: state.settings.style });
   const copied = await copyText(prompt);
   saveDraft(true);
   const box = $('#ai-next');
@@ -718,9 +720,40 @@ async function copyResult() {
 }
 
 function toggleEditResult() {
+  const d = state.draft;
   state.editingResult = !state.editingResult;
   refreshWrite();
-  if (state.editingResult) $('#result-text')?.focus();
+  if (state.editingResult) {
+    $('#result-text')?.focus();
+    return;
+  }
+  // Finished fixing it by hand: their wording is a good sample of how they like it written.
+  if (d.aiText && d.result.trim() && d.result.trim() !== d.aiText.trim()) offerStyleExample(d.result, d.savedId || '');
+}
+
+// ---------- my style: examples of the instructor's own writing ----------
+
+function addStyleExample(text, itemId = '') {
+  const s = state.settings.style;
+  const examples = s.examples.filter((e) => !(itemId && e.itemId === itemId) && e.text !== text.trim());
+  examples.push({ text: text.trim().slice(0, STYLE_LIMITS.exampleChars), itemId, addedAt: Date.now() });
+  state.settings.style = normalizeStyle({ ...s, examples }); // keeps only the newest few
+  saveSettings();
+}
+
+function removeStyleExample(keep) {
+  const s = state.settings.style;
+  state.settings.style = normalizeStyle({ ...s, examples: s.examples.filter(keep) });
+  saveSettings();
+}
+
+function offerStyleExample(text, itemId) {
+  const s = state.settings.style;
+  if (s.examples.some((e) => e.text === text.trim())) return;
+  const n = STYLE_LIMITS.examples;
+  if (!confirm(`Use this as an example of your writing style?\n\nThe app keeps your newest ${n} and uses them to make future breakdowns sound like you. You can change them in Settings.`)) return;
+  addStyleExample(text, itemId);
+  toast('Kept as a style example');
 }
 
 let resultTimer;
@@ -736,7 +769,7 @@ function onResultEdit(value) {
 }
 
 function startOver() {
-  state.draft = { raw: '', result: '', savedId: null };
+  state.draft = { raw: '', result: '', aiText: '', savedId: null };
   state.editingResult = false;
   saveDraft(true);
   renderWrite();
@@ -904,6 +937,7 @@ async function saveModify() {
       }
     }
     d.result = m.result;
+    d.aiText = m.result;
     saveDraft(true);
     state.modify = null;
     toast('Using the new version');
@@ -972,6 +1006,7 @@ function renderItem(id) {
       <label class="field"><span class="label">Breakdown</span>
         <textarea id="i-text" class="big" rows="10" placeholder="Type or dictate a breakdown you use often.">${esc(item?.text)}</textarea></label>
       <label class="check"><input id="i-pinned" type="checkbox"${!item || item.pinned ? ' checked' : ''}><span>Prewritten (keep it at the top)</span></label>
+      <label class="check"><input id="i-style" type="checkbox"${item && state.settings.style.examples.some((e) => e.itemId === item.id) ? ' checked' : ''}><span>Use as an example of my style</span></label>
       <button class="btn btn-block" data-action="copy-edit">${ICON.copy} Copy</button>
       ${item ? `<button class="btn btn-block btn-danger" data-action="delete-item" data-id="${idAttr}">Delete</button>` : ''}
     </main>`;
@@ -999,6 +1034,9 @@ async function saveItemForm(id) {
     state.draft.result = item.text;
     saveDraft(true);
   }
+  const wasExample = state.settings.style.examples.some((e) => e.itemId === item.id);
+  if ($('#i-style').checked) addStyleExample(item.text, item.id);
+  else if (wasExample) removeStyleExample((e) => e.itemId !== item.id);
   toast('Saved');
   go('/saved', true);
 }
@@ -1138,12 +1176,7 @@ function renderSettings() {
         <button class="btn btn-block" data-action="save-model">Save model</button>
       </details>
 
-      <section class="card">
-        <h2>How it writes</h2>
-        <label class="field"><span class="label">Your own instructions <span class="optional">optional</span></span>
-          <textarea id="st-extra" rows="3" placeholder="e.g. Sign it “Coach Eli”. Always mention the student's permit hours when I say them.">${esc(st.extra)}</textarea></label>
-        <button class="btn btn-block" data-action="save-extra">Save instructions</button>
-      </section>
+      ${styleSection()}
 
       <section class="card">
         <h2>Review card</h2>
@@ -1387,10 +1420,39 @@ function saveModel() {
   toast('Model saved');
 }
 
-function saveExtra() {
-  state.settings.extra = $('#st-extra').value.trim();
+function styleSection() {
+  const s = state.settings.style;
+  const chip = (key, value, label) => `<button type="button" class="chip${s[key] === value ? ' on' : ''}" data-action="style-pick" data-key="${key}" data-value="${value}">${label}</button>`;
+  const examples = s.examples.length
+    ? `<div class="style-examples">${s.examples.map((e, i) => `<div class="style-example"><span class="snip">${esc(e.text.split('\n').find((l) => l.trim()) || '')}</span><button class="mini" data-action="style-remove-example" data-index="${i}">Remove</button></div>`).join('')}</div>`
+    : '<p class="fine">None yet.</p>';
+  return `<section class="card">
+    <h2>My style</h2>
+    <p class="fine">Breakdowns stay professional and in the same format. This makes them sound like you.</p>
+    <div class="style-row"><span class="label">Tone</span>
+      <div class="chips">${chip('tone', 'warm', 'Warm')}${chip('tone', 'plain', 'Matter-of-fact')}${chip('tone', '', 'Either')}</div></div>
+    <div class="style-row"><span class="label">Length</span>
+      <div class="chips">${chip('length', 'short', 'Short')}${chip('length', 'detailed', 'Detailed')}${chip('length', '', 'Either')}</div></div>
+    <label class="field"><span class="label">Sign-off <span class="optional">optional</span></span>
+      <input id="st-signoff" value="${esc(s.signoff)}" maxlength="${STYLE_LIMITS.signoff}" placeholder="e.g. Coach Eli, Key Skills Driving School" autocomplete="off"></label>
+    <div class="style-row"><span class="label">Examples of my writing</span>
+      ${examples}
+      <p class="fine">Whenever you fix a breakdown by hand, the app offers to keep it as an example. You can also open any saved breakdown, tap <strong>Edit</strong>, and tick <strong>Use as an example of my style</strong>. Your newest ${STYLE_LIMITS.examples} are used.</p>
+    </div>
+    ${s.examples.length ? `<div class="style-row"><span class="label">How closely to follow them</span>
+      <div class="chips">${chip('polish', 'tidy', 'Tidy me up')}${chip('polish', 'close', 'Close to how I write')}</div></div>` : ''}
+    <label class="field"><span class="label">Anything else <span class="optional">optional</span></span>
+      <textarea id="st-extra" rows="2" placeholder="e.g. Always mention the student's permit hours when I say them.">${esc(state.settings.extra)}</textarea></label>
+    <button class="btn btn-block" data-action="save-style">Save style</button>
+  </section>`;
+}
+
+// The chips save themselves; this keeps the typed fields.
+function saveStyleText() {
+  state.settings.extra = $('#st-extra')?.value.trim() ?? state.settings.extra;
+  const signoff = $('#st-signoff')?.value;
+  if (signoff !== undefined) state.settings.style = normalizeStyle({ ...state.settings.style, signoff });
   saveSettings();
-  toast('Instructions saved');
 }
 
 function saveReviewSettings() {
@@ -1407,7 +1469,7 @@ function saveReviewSettings() {
 }
 
 async function backup() {
-  const data = { app: 'lesson-notes', version: 2, exportedAt: new Date().toISOString(), items: [...state.items.values()] };
+  const data = { app: 'lesson-notes', version: 2, exportedAt: new Date().toISOString(), items: [...state.items.values()], style: state.settings.style };
   const name = `ksds-breakdowns-backup-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([JSON.stringify(data, null, 2)], name, { type: 'application/json' });
   try {
@@ -1466,7 +1528,7 @@ async function wipeApp() {
   state.device = defaultDevice();
   state.phones = null;
   state.pendingCount = 0;
-  state.draft = { raw: '', result: '', savedId: null };
+  state.draft = { raw: '', result: '', aiText: '', savedId: null };
   state.editingResult = false;
   state.query = '';
   toast('App wiped. Nothing else on your phone was touched.');
@@ -1514,8 +1576,15 @@ async function restoreFrom(input) {
       createdAt: num(i.createdAt), updatedAt: num(i.updatedAt),
     }))
     .filter((i) => !state.items.has(i.id) || i.updatedAt > (state.items.get(i.id).updatedAt || 0));
+  // A style only comes back if this phone hasn't set one, so a restore never overwrites yours.
+  let styleRestored = false;
+  if (styleIsSet(data.style) && !styleIsSet(state.settings.style)) {
+    state.settings.style = normalizeStyle(data.style);
+    saveSettings();
+    styleRestored = true;
+  }
   if (!items.length) {
-    toast('Everything in that backup is already here');
+    toast(styleRestored ? 'Your style was restored. The breakdowns were already here.' : 'Everything in that backup is already here');
     return;
   }
   if (!confirm(`Restore ${items.length} breakdown${items.length === 1 ? '' : 's'} from this backup?`)) return;
@@ -1600,7 +1669,21 @@ const actions = {
   }),
   'remove-key': () => forgetKey('apiKey', 'Remove your OpenAI key from this phone?'),
   'save-model': () => saveModel(),
-  'save-extra': () => saveExtra(),
+  'save-style': () => {
+    saveStyleText();
+    toast('Style saved');
+  },
+  'style-pick': (el) => {
+    state.settings.style = normalizeStyle({ ...state.settings.style, [el.dataset.key]: el.dataset.value });
+    saveSettings();
+    $$('.chip', el.parentElement).forEach((c) => c.classList.toggle('on', c === el));
+  },
+  'style-remove-example': (el) => {
+    saveStyleText(); // don't lose what's typed in the boxes when the section redraws
+    const index = Number(el.dataset.index);
+    removeStyleExample((_, i) => i !== index);
+    render();
+  },
   'save-review-settings': () => saveReviewSettings(),
   backup: () => backup(),
   restore: () => $('#restore-file').click(),
@@ -1695,8 +1778,9 @@ async function start() {
     const [items, settings, draft, device] = await Promise.all([db.all('items'), db.getMeta('settings'), db.getMeta('draft'), db.getMeta('device')]);
     items.forEach((i) => state.items.set(i.id, i));
     Object.assign(state.settings, settings || {});
+    state.settings.style = normalizeStyle(state.settings.style); // phones from before styles existed
     Object.assign(state.device, device || {});
-    if (draft && typeof draft.raw === 'string') state.draft = { raw: draft.raw, result: draft.result || '', savedId: draft.savedId || null };
+    if (draft && typeof draft.raw === 'string') state.draft = { raw: draft.raw, result: draft.result || '', aiText: draft.aiText || '', savedId: draft.savedId || null };
   } catch (err) {
     app.innerHTML = `<main class="view"><div class="card"><h2>Couldn't open your saved breakdowns</h2>
       <p>${esc(err?.message || err)}</p><p>Close the app completely and open it again.</p></div></main>`;

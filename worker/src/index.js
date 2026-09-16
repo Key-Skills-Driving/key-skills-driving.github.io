@@ -7,7 +7,7 @@
 // Each phone makes up an id and a secret token the first time it asks to join; this server keeps
 // only a hash of the token. The first phone to claim admin becomes the admin, and after that only
 // admins can approve, remove or promote phones.
-import { systemPrompt, userMessage, modifyMessage, writeWithGemini, checkGeminiKey } from '../../docs/ai.js';
+import { systemPrompt, userMessage, modifyMessage, normalizeStyle, writeWithGemini, checkGeminiKey } from '../../docs/ai.js';
 
 const APP_ORIGINS = new Set(['https://key-skills-driving.github.io', 'http://localhost:5173']);
 const MAX = { name: 40, raw: 8000, current: 8000, change: 2000, extra: 800, key: 200 };
@@ -37,6 +37,7 @@ export default {
       return reply(body, 200, cors);
     } catch (err) {
       if (err instanceof Refusal) return reply({ error: err.message }, err.status, cors);
+      console.error('school server error:', err?.message || err); // the message only, never the request
       return reply({ error: 'Something went wrong on the school server. Try again.' }, 500, cors);
     }
   },
@@ -58,12 +59,13 @@ async function handle(request, env) {
     case 'POST /breakdown': {
       await allowWriting(phone, env);
       const raw = text(input.raw, MAX.raw, 'notes');
-      return { text: await write(env, systemPrompt(text(input.extra, MAX.extra)), userMessage({ raw })) };
+      // normalizeStyle drops anything unknown and caps the examples, so a phone can't pad the prompt.
+      return { text: await write(env, systemPrompt(text(input.extra, MAX.extra), normalizeStyle(input.style)), userMessage({ raw })) };
     }
     case 'POST /modify': {
       await allowWriting(phone, env);
       const user = modifyMessage({ raw: text(input.raw, MAX.raw), current: text(input.current, MAX.current, 'breakdown'), change: text(input.change, MAX.change, 'change') });
-      return { text: await write(env, systemPrompt(text(input.extra, MAX.extra)), user) };
+      return { text: await write(env, systemPrompt(text(input.extra, MAX.extra), normalizeStyle(input.style)), user) };
     }
     case 'POST /admin/claim': return claimAdmin(phone, input, env);
     case 'GET /admin/phones': await requireAdmin(phone); return listPhones(env);

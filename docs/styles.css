@@ -364,6 +364,40 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
   cursor: pointer;
 }
 
+/* ---------- my style (settings) ---------- */
+
+.style-row { margin-bottom: 14px; }
+.style-row .label { margin-bottom: 8px; }
+.chips { display: flex; gap: 6px; }
+.chip {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.chip.on { border-color: var(--brand); background: var(--brand); color: var(--brand-ink); }
+.style-examples { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin: 0 0 10px; }
+.style-example {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  font-size: 14px;
+}
+.style-example .mini { flex: none; }
+.style-example .snip { flex: 1; min-width: 0; overflow: hidden; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
+
 /* ---------- phones (admin) ---------- */
 
 .card-title { margin: 0 0 8px; font-size: 19px; }
