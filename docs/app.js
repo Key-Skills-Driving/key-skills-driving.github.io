@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.1';
+const VERSION = '3.9.2';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -1319,11 +1319,11 @@ function renderSettings() {
     ${header({ left: backLink('/', 'Back'), title: 'Settings' })}
     <main class="view settings">
       ${settingsSection('invite', 'Invite a coworker', invite)}
-      ${settingsSection('school', 'School AI', schoolSection(), schoolBadge)}
-      ${settingsSection('keys', 'Use your own AI key', keys, keyBadge)}
       ${settingsSection('style', 'My style', styleSection())}
       ${settingsSection('review', 'Review card', review)}
       ${settingsSection('backup', 'Backup', backup)}
+      ${settingsSection('keys', 'Use your own AI key', keys, keyBadge)}
+      ${settingsSection('school', 'School AI', schoolSection(), schoolBadge)}
       ${settingsSection('privacy', 'Privacy & security', privacy)}
       <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
     </main>`;
