@@ -10,7 +10,8 @@ const OPENER = "I'm a driving instructor.";
 
 export const STYLE_LIMITS = { examples: 3, exampleChars: 1500, signoff: 80 };
 
-// Keeps only what the prompt understands. The school server runs it on whatever a phone sends.
+// Keeps only what the prompt understands (tone and length are fixed: warm and detailed).
+// The school server runs it on whatever a phone sends.
 export function normalizeStyle(value) {
   const o = value && typeof value === 'object' ? value : {};
   const pick = (v, allowed) => (allowed.includes(v) ? v : '');
@@ -24,8 +25,6 @@ export function normalizeStyle(value) {
       addedAt: Number(e.addedAt) || 0,
     }));
   return {
-    tone: pick(o.tone, ['warm', 'plain']),
-    length: pick(o.length, ['short', 'detailed']),
     polish: pick(o.polish, ['close', 'tidy']) || 'tidy',
     signoff: typeof o.signoff === 'string' ? o.signoff.trim().slice(0, STYLE_LIMITS.signoff) : '',
     examples,
@@ -34,17 +33,13 @@ export function normalizeStyle(value) {
 
 export const styleIsSet = (style) => {
   const s = normalizeStyle(style);
-  return !!(s.tone || s.length || s.signoff || s.examples.length);
+  return !!(s.signoff || s.examples.length);
 };
 
 // The examples set the voice; the rules above them still set the floor.
 function styleLines(style) {
   const s = normalizeStyle(style);
   const lines = [];
-  if (s.tone === 'warm') lines.push("- Tone: warm and encouraging, like a coach who is on the student's side.");
-  if (s.tone === 'plain') lines.push('- Tone: plain and matter-of-fact. Encouraging where it is earned, without gushing.');
-  if (s.length === 'short') lines.push('- Length: brief. A short message and short bullets, about 70 to 110 words in all.');
-  if (s.length === 'detailed') lines.push('- Length: fuller. A message that walks through each skill with its specifics, about 150 to 220 words in all.');
   if (s.signoff) lines.push(`- End with this sign-off on its own line, exactly as written: ${s.signoff}`);
   if (s.examples.length) {
     lines.push(s.polish === 'close'
@@ -74,10 +69,10 @@ export function systemPrompt(extra = '', style = null) {
     '- The message is the heart of the breakdown. Talk the lesson through the way the instructor would in person, with the specifics from the notes. Never restate the "Covered today" list inside it.',
     '- Use only what the instructor said or clearly implied. Never invent maneuvers, places, speeds or results.',
     '- Fix speech-to-text mistakes and drop filler words, but keep road and place names.',
-    '- Professional, encouraging and specific, in plain language a parent understands.',
+    "- Warm and encouraging, like a coach who is on the student's side, and specific, in plain language a parent understands.",
     '- Never use anyone\'s name. Wherever the notes name the student, write "the student" instead ("The student" at the start of a sentence). Refer to anyone else by their role, like "the parent".',
     '- If the notes say the student has finished (for example, they passed or completed their driving test, or it was their last lesson), leave out the whole "Focus for next lesson" section, because there is no next lesson. If they didn\'t pass and will keep having lessons, include it.',
-    "- Keep it concise, usually 100 to 180 words, unless the instructor's style below says otherwise.",
+    '- Detailed: a message that walks through each skill with its specifics, about 150 to 220 words in all.',
     ...styleLines(style),
   ];
   if (extra.trim()) lines.push('', `The instructor's own preferences (follow these): ${extra.trim()}`);

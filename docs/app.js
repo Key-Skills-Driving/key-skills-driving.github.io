@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.8.1';
+const VERSION = '3.9.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -20,7 +20,7 @@ const REVIEW_DEFAULTS = {
 };
 
 // geminiKey: free Google Gemini key. apiKey: optional paid OpenAI key.
-// style: how this instructor likes breakdowns written (tone, length, sign-off, examples of their writing).
+// style: how this instructor likes breakdowns written (sign-off, examples of their writing, how much to polish, extra instructions).
 const defaultSettings = () => ({
   lastBackup: null, geminiKey: '', apiKey: '', model: DEFAULT_MODEL, claudeKey: '', claudeModel: DEFAULT_CLAUDE_MODEL, extra: '', style: normalizeStyle({}), ...REVIEW_DEFAULTS,
 });
@@ -1641,11 +1641,7 @@ function styleSection() {
   } else {
     adder = '<button class="btn btn-block" data-action="style-add-example">Add an example</button>';
   }
-  return `<p class="fine">Breakdowns stay professional and in the same format. This makes them sound like you.</p>
-    <div class="style-row"><span class="label">Tone</span>
-      <div class="chips">${chip('tone', 'warm', 'Warm')}${chip('tone', 'plain', 'Matter-of-fact')}${chip('tone', '', 'Either')}</div></div>
-    <div class="style-row"><span class="label">Length</span>
-      <div class="chips">${chip('length', 'short', 'Short')}${chip('length', 'detailed', 'Detailed')}${chip('length', '', 'Either')}</div></div>
+  return `<p class="fine">Breakdowns are always warm, detailed and in the same format. Everything here makes them sound like you.</p>
     <label class="field"><span class="label">Sign-off <span class="optional">optional</span></span>
       <input id="st-signoff" value="${esc(s.signoff)}" maxlength="${STYLE_LIMITS.signoff}" placeholder="e.g. Coach Eli, Key Skills Driving School" autocomplete="off"></label>
     <div class="style-row"><span class="label">Examples of my writing</span>
