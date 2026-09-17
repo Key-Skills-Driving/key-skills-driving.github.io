@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.4';
+const VERSION = '3.9.5';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -1164,13 +1164,13 @@ function schoolBrand(name) {
   </div>`;
 }
 
-// With the school's own link, show Eli's full review card (its QR code was replaced with one
-// that scans). With any other link, fall back to a drawn card with a QR code for that link.
+// With the school's own link, show Eli's full review card (his 2026-09-17 version, whose QR code
+// scans). With any other link, fall back to a drawn card with a QR code for that link.
 function renderReview() {
   const { reviewUrl } = state.settings;
   const card = reviewUrl === REVIEW_DEFAULTS.reviewUrl
     ? `<div class="rv-image-wrap">
-        <img src="review-card.webp" width="1023" height="1537" alt="Please leave a review. Scan the QR code or go to tinyurl.com/KeySkillsReview. Key Skills Driving School, a veteran-owned business.">
+        <img src="review-card.webp" width="1023" height="1537" alt="Please leave a review. Scan the QR code. Key Skills Driving School, a veteran-owned business.">
         <button class="rv-link-hit" data-action="copy-review" aria-label="Copy the review link"></button>
       </div>`
     : drawnReviewCard();

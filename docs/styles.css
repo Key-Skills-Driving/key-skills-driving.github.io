@@ -695,13 +695,13 @@ textarea.big { min-height: 170px; }
   border-radius: 3% / 2%;
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
 }
-/* Invisible tap target over the link bar printed on the card. */
+/* Invisible tap target over the SCAN QR CODE bar printed on the card: tapping it copies the link. */
 .rv-link-hit {
   position: absolute;
-  top: 61.4%;
-  left: 9.4%;
-  width: 81.2%;
-  height: 6.7%;
+  top: 61.7%;
+  left: 15.2%;
+  width: 69.5%;
+  height: 8.3%;
   border: 0;
   border-radius: 12px;
   background: transparent;
