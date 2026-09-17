@@ -1,48 +1,27 @@
+/* One look only: Eli picked the dark palette for everyone, so it no longer follows the phone's Light/Dark setting. */
 :root {
-  --bg: #f2f4f8;
-  --surface: #ffffff;
-  --surface-2: #e8ecf3;
-  --ink: #111a2e;
-  --ink-2: #45506a;
-  --ink-3: #6e7890;
-  --line: #d6dce7;
-  --card-border: transparent;
-  --header: #14285f;
+  --bg: #0a0f1d;
+  --surface: #141b2e;
+  --surface-2: #1d2641;
+  --ink: #edf0f7;
+  --ink-2: #b4bcd1;
+  --ink-3: #8a93ab;
+  --line: #2a3350;
+  --card-border: #232c47;
+  --header: #0f1d45;
   --header-ink: #ffffff;
-  --brand: #14285f;
-  --brand-ink: #ffffff;
+  --brand: #f5b400;
+  --brand-ink: #111a2e;
   --gold: #f5b400;
-  --gold-soft: #fff1c7;
-  --gold-ink: #5c4000;
-  --good: #1d8a55;
-  --danger: #c23b2e;
+  --gold-soft: #372c0b;
+  --gold-ink: #ffd766;
+  --good: #62d69c;
+  --danger: #ff7a6b;
   --radius: 16px;
-  --shadow: 0 1px 2px rgba(17, 26, 46, 0.06), 0 2px 10px rgba(17, 26, 46, 0.05);
+  --shadow: none;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
-  color-scheme: light;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0a0f1d;
-    --surface: #141b2e;
-    --surface-2: #1d2641;
-    --ink: #edf0f7;
-    --ink-2: #b4bcd1;
-    --ink-3: #8a93ab;
-    --line: #2a3350;
-    --card-border: #232c47;
-    --header: #0f1d45;
-    --brand: #f5b400;
-    --brand-ink: #111a2e;
-    --gold-soft: #372c0b;
-    --gold-ink: #ffd766;
-    --good: #62d69c;
-    --danger: #ff7a6b;
-    --shadow: none;
-    color-scheme: dark;
-  }
+  color-scheme: dark;
 }
 
 * { box-sizing: border-box; }
