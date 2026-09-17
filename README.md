@@ -18,6 +18,7 @@ Notifications use Web Push (`@block65/webcrypto-web-push`): the VAPID public key
 - **Review:** the school's "Please leave a review" card with a scannable QR code, and a Send button.
 - **Private:** everything stays on the phone (IndexedDB). API keys only leave the phone to call Google or OpenAI, and aren't included in backups. Breakdowns never use names (the student is always "the student"). On Gemini's free tier Google may use what's sent to improve its products, so the app suggests leaving last names out of the dictation.
 - **Screen stays on** while you dictate, while a breakdown is being written, and while the review card is showing.
+- **Reload:** pull down from the top of any screen (the installed app has no browser bar), or tap Reload at the bottom of Settings. It checks for a new version first, so one pull picks up an update.
 
 ## Installing
 

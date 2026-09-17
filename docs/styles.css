@@ -782,3 +782,39 @@ textarea.big { min-height: 170px; }
   transition: opacity 0.2s, transform 0.2s;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+/* ---------- pull down to reload ---------- */
+
+.ptr {
+  position: fixed;
+  top: calc(var(--safe-top) + 52px);
+  right: 0;
+  left: 0;
+  z-index: 9; /* slides out from under the header */
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-70px);
+  transition: transform 0.2s ease, opacity 0.2s ease;
+}
+.ptr.pulling { transition: none; }
+.ptr-pill {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+  color: var(--ink-2);
+  font-size: 14px;
+  font-weight: 600;
+}
+.ptr svg { width: 18px; height: 18px; transition: transform 0.2s; }
+.ptr.ready .ptr-pill { border-color: var(--brand); color: var(--brand); }
+.ptr.ready svg { transform: rotate(180deg); }
+.ptr .spinner { width: 16px; height: 16px; border-width: 2px; }
+.version .link-btn { padding: 2px 4px; color: var(--brand); font-size: inherit; }

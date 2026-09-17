@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.3';
+const VERSION = '3.9.4';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -69,6 +69,7 @@ const ICON = {
   copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   zap: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
   send: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12v7a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-7M16 6l-4-4-4 4M12 2v13"/></svg>',
+  arrowDown: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16M5 13l7 7 7-7"/></svg>',
 };
 
 const app = document.getElementById('app');
@@ -1325,7 +1326,8 @@ function renderSettings() {
       ${settingsSection('backup', 'Backup', backup)}
       ${settingsSection('keys', 'Use your own AI key', keys, keyBadge)}
       ${settingsSection('privacy', 'Privacy & security', privacy)}
-      <p class="fine center">KSDS Lesson Breakdown ${VERSION}</p>
+      <p class="fine center version">KSDS Lesson Breakdown ${VERSION} · <button type="button" class="link-btn" data-action="reload-app">Reload</button></p>
+      <p class="fine center">Or pull down from the top of any screen, like in Safari.</p>
     </main>`;
   $$('details[open] textarea', app).forEach(autosize);
   if (state.device.adminExists === null) syncSchool({ force: true });
@@ -1937,6 +1939,7 @@ const actions = {
     saveSettings();
     $$('.chip', el.parentElement).forEach((c) => c.classList.toggle('on', c === el));
   },
+  'reload-app': () => reloadApp(),
   'style-add-example': () => {
     saveStyleText();
     state.addingExample = true;
@@ -2052,6 +2055,110 @@ document.addEventListener('visibilitychange', () => {
 });
 addEventListener('pagehide', () => saveDraft(true));
 
+// ---------- pull down to reload ----------
+// The installed app has no browser bar, so dragging down from the top of any screen reloads it
+// (like Safari) and picks up a new version if one is out. Settings has a Reload button too.
+
+let ptr = null; // the indicator, created once and kept outside #app so re-renders leave it alone
+let reloading = false;
+
+function ptrEl() {
+  if (ptr) return ptr;
+  ptr = document.createElement('div');
+  ptr.className = 'ptr';
+  ptr.setAttribute('aria-hidden', 'true');
+  ptr.innerHTML = `<div class="ptr-pill">${ICON.arrowDown}<span class="ptr-text"></span></div>`;
+  document.body.append(ptr);
+  return ptr;
+}
+
+function ptrHide() {
+  if (!ptr) return;
+  ptr.classList.remove('pulling', 'ready');
+  ptr.style.transform = '';
+  ptr.style.opacity = '';
+}
+
+async function reloadApp() {
+  if (reloading) return;
+  reloading = true;
+  cancelWriting();
+  const el = ptrEl();
+  el.classList.remove('pulling', 'ready');
+  el.classList.add('loading');
+  el.style.transform = 'translateY(8px)';
+  el.style.opacity = '1';
+  el.querySelector('svg')?.replaceWith(Object.assign(document.createElement('span'), { className: 'spinner' }));
+  el.querySelector('.ptr-text').textContent = 'Reloading…';
+  saveDraft(true);
+  // Look for a new version first, so one pull is enough to get it.
+  let fresh = false;
+  try {
+    const reg = await navigator.serviceWorker?.getRegistration();
+    if (reg) {
+      const found = new Promise((resolve) => reg.addEventListener('updatefound', () => resolve(true), { once: true }));
+      await reg.update();
+      fresh = !!(reg.installing || reg.waiting)
+        || await Promise.race([found, new Promise((resolve) => setTimeout(() => resolve(false), 500))]);
+    }
+  } catch {
+    // offline or no worker: a plain reload still comes from the cache
+  }
+  // A new version installs and takes over, and controllerchange reloads the page. If that never comes, reload anyway.
+  setTimeout(() => location.reload(), fresh ? 8000 : 0);
+}
+
+function setupPullToReload() {
+  const THRESHOLD = 64;
+  let startX = 0;
+  let startY = 0;
+  let armed = false;
+  let pulling = false;
+  let dist = 0;
+  const atTop = () => (document.scrollingElement || document.documentElement).scrollTop <= 0;
+
+  document.addEventListener('touchstart', (e) => {
+    armed = false;
+    pulling = false;
+    if (reloading || e.touches.length !== 1 || state.busy || state.modify?.busy || !atTop()) return;
+    if (e.target.closest?.('textarea, input, select')) return; // scrolling or selecting inside a box
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    armed = true;
+  }, { passive: true });
+
+  document.addEventListener('touchmove', (e) => {
+    if (!armed) return;
+    const t = e.touches[0];
+    const dy = t.clientY - startY;
+    const dx = t.clientX - startX;
+    if (!pulling) {
+      if (dy < 0 || Math.abs(dx) > Math.abs(dy)) { armed = false; return; } // scrolling up or sideways
+      if (dy < 6) return;
+      if (!atTop()) { armed = false; return; }
+      pulling = true;
+    }
+    if (e.cancelable) e.preventDefault(); // keeps the page from rubber-banding under the indicator
+    dist = Math.min(dy * 0.6, 100);
+    const el = ptrEl();
+    el.classList.add('pulling');
+    el.classList.toggle('ready', dist >= THRESHOLD);
+    el.style.transform = `translateY(${Math.round(dist - 70)}px)`;
+    el.style.opacity = String(Math.min(1, dist / 40));
+    el.querySelector('.ptr-text').textContent = dist >= THRESHOLD ? 'Release to reload' : 'Pull to reload';
+  }, { passive: false });
+
+  const end = () => {
+    const fire = pulling && dist >= THRESHOLD;
+    armed = false;
+    pulling = false;
+    if (fire) reloadApp();
+    else ptrHide();
+  };
+  document.addEventListener('touchend', end);
+  document.addEventListener('touchcancel', end);
+}
+
 // ---------- start ----------
 
 function registerServiceWorker() {
@@ -2085,6 +2192,7 @@ async function start() {
   addEventListener('hashchange', render);
   render();
   registerServiceWorker();
+  setupPullToReload();
   syncSchool({ force: true });
 }
 
