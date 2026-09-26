@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.7';
+const VERSION = '3.9.8';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -966,7 +966,6 @@ function renderModify(id) {
     <main class="view modify">
       <section class="card result">
         <div class="result-head"><h2>${m.result ? 'New version' : 'Breakdown'}</h2>${m.result ? `<span class="pill pill-gold">${target.pending}</span>` : ''}</div>
-        <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-modify">${ICON.copy} Copy</button>
         <div class="text result-text">${esc(m.result || target.text)}</div>
         ${m.result ? `<div class="two">
           <button class="btn btn-primary" data-action="save-modify">${target.keep}</button>
@@ -1000,7 +999,7 @@ async function runModify() {
     if (!isCurrent(run)) return;
     m.result = cleanReply(text);
     m.change = '';
-    toast(`Done. Tap ${target.keep} to keep it.`);
+    toast(`Done. Tap ${target.keep} to keep and copy it.`);
   } catch (err) {
     if (!isCurrent(run) || err.message === CANCELLED) return;
     toast(err.message);
@@ -1020,6 +1019,8 @@ async function runModify() {
 async function saveModify() {
   const m = state.modify;
   if (!m?.result) return;
+  const copied = await copyText(m.result);
+  const done = (what) => toast(copied ? `${what} and copied. Paste it anywhere.` : `${what}. Couldn't copy, so press and hold the text to copy it.`);
   if (!m.id) {
     // The fresh breakdown takes the new version, and so does its saved copy if it has one,
     // the same as editing it by hand.
@@ -1037,7 +1038,7 @@ async function saveModify() {
     d.aiText = m.result;
     saveDraft(true);
     state.modify = null;
-    toast('Using the new version');
+    done('Updated');
     backToBreakdown();
     return;
   }
@@ -1054,7 +1055,7 @@ async function saveModify() {
     saveDraft(true);
   }
   state.modify = null;
-  toast('Changes saved');
+  done('Saved');
   go('/saved', true);
 }
 
@@ -1835,10 +1836,6 @@ const actions = {
     if (!state.modify) return;
     state.modify.result = '';
     render();
-  },
-  'copy-modify': async () => {
-    const target = state.modify && modifyTarget(state.modify.id);
-    if (target) toast((await copyText(state.modify.result || target.text)) ? 'Copied. Paste it anywhere.' : "Couldn't copy");
   },
   'modify-result': () => {
     state.editingResult = false;
