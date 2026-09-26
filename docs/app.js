@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.8';
+const VERSION = '3.9.9';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -102,12 +102,32 @@ function highlight(text, terms) {
 }
 
 let toastTimer;
-function toast(message) {
+// With an action ({ label, run }) the message stays up until the button is tapped or another
+// message replaces it; otherwise it fades on its own.
+function toast(message, action = null) {
   const el = $('#toast');
-  el.textContent = message;
+  el.textContent = message; // also drops any earlier button
+  el.classList.toggle('with-action', !!action);
+  if (action) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'toast-action';
+    btn.textContent = action.label;
+    btn.addEventListener('click', () => {
+      el.classList.remove('show');
+      action.run();
+    });
+    el.append(btn);
+  }
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+  if (!action) toastTimer = setTimeout(() => el.classList.remove('show'), 2800);
+}
+
+// A tap on Retry is a fresh gesture, which is exactly what the clipboard wants.
+async function retryCopy(text) {
+  if (await copyText(text)) toast('Copied. Paste it anywhere.');
+  else toast('Copy failed again.', { label: 'Retry', run: () => retryCopy(text) });
 }
 
 function autosize(ta) {
@@ -1019,8 +1039,11 @@ async function runModify() {
 async function saveModify() {
   const m = state.modify;
   if (!m?.result) return;
-  const copied = await copyText(m.result);
-  const done = (what) => toast(copied ? `${what} and copied. Paste it anywhere.` : `${what}. Couldn't copy, so press and hold the text to copy it.`);
+  const text = m.result;
+  const copied = await copyText(text);
+  const done = (what) => (copied
+    ? toast(`${what} and copied. Paste it anywhere.`)
+    : toast(`${what}, but the copy failed.`, { label: 'Retry', run: () => retryCopy(text) }));
   if (!m.id) {
     // The fresh breakdown takes the new version, and so does its saved copy if it has one,
     // the same as editing it by hand.

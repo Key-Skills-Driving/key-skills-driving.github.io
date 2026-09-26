@@ -783,6 +783,19 @@ textarea.big { min-height: 170px; }
   transition: opacity 0.2s, transform 0.2s;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }
+#toast.with-action { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; pointer-events: auto; }
+.toast-action {
+  flex: none;
+  min-height: 36px;
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 9px;
+  background: var(--brand);
+  color: var(--brand-ink);
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
 
 /* ---------- pull down to reload ---------- */
 
