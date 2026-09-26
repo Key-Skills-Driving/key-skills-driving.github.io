@@ -7,7 +7,7 @@ import {
 import { qrSvg } from './review.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.6';
+const VERSION = '3.9.7';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -670,11 +670,11 @@ function resultCard() {
     ${body}
     <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-result">${ICON.copy} Copy</button>
     <div class="two">
-      <button class="btn" data-action="save-result"${d.savedId ? ' disabled' : ''}>${d.savedId ? 'Saved ✓' : `${ICON.bookmark} Save`}</button>
+      <button class="btn" data-action="edit-result">${state.editingResult ? 'Done editing' : 'Edit'}</button>
       <button class="btn" data-action="modify-result">${ICON.zap} Modify</button>
     </div>
     <div class="two">
-      <button class="btn" data-action="edit-result">${state.editingResult ? 'Done editing' : 'Edit'}</button>
+      <button class="btn" data-action="save-result"${d.savedId ? ' disabled' : ''}>${d.savedId ? 'Saved ✓' : `${ICON.bookmark} Save`}</button>
       <button class="btn btn-white" data-action="start-over">New lesson</button>
     </div>
   </section>`;
@@ -969,7 +969,7 @@ function renderModify(id) {
         <button class="btn btn-primary btn-block btn-tall result-copy" data-action="copy-modify">${ICON.copy} Copy</button>
         <div class="text result-text">${esc(m.result || target.text)}</div>
         ${m.result ? `<div class="two">
-          <button class="btn" data-action="save-modify">${target.keep}</button>
+          <button class="btn btn-primary" data-action="save-modify">${target.keep}</button>
           <button class="btn" data-action="undo-modify">Undo changes</button>
         </div>` : ''}
       </section>
