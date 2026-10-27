@@ -2,7 +2,8 @@
 //
 // Holds the school's Gemini key and a list of phones the admin has approved, so staff can use
 // Break it down without a key of their own. It only writes lesson breakdowns (the prompt is built
-// here, not sent by the phone), only answers the app's own web address, and stores no lesson text.
+// here, not sent by the phone) and fetches practice routes, only answers the app's own web address,
+// and stores no lesson text.
 //
 // Each phone makes up an id and a secret token the first time it asks to join; this server keeps
 // only a hash of the token. The first phone to claim admin becomes the admin, and after that only
@@ -35,6 +36,10 @@ export default {
     try {
       if (!APP_ORIGINS.has(origin)) throw new Refusal(403, 'This server only works from the KSDS Lessons app.');
       const body = await handle(request, env, ctx);
+      if (body instanceof Response) { // a route, passed straight through so the server never has to parse it
+        Object.entries(cors).forEach(([k, v]) => body.headers.set(k, v));
+        return body;
+      }
       return reply(body, 200, cors);
     } catch (err) {
       if (err instanceof Refusal) return reply({ error: err.message }, err.status, cors);
@@ -69,6 +74,7 @@ async function handle(request, env, ctx) {
       const user = modifyMessage({ raw: text(input.raw, MAX.raw), current: text(input.current, MAX.current, 'breakdown'), change: text(input.change, MAX.change, 'change') });
       return { text: await write(env, systemPrompt(text(input.extra, MAX.extra), normalizeStyle(input.style)), user) };
     }
+    case 'POST /route': await allowWriting(phone, env); return drivingRoute(env, input);
     case 'POST /admin/claim': return claimAdmin(phone, input, env);
     case 'GET /admin/phones': await requireAdmin(phone); return listPhones(env);
     case 'POST /admin/approve': await requireAdmin(phone); return setStatus(env, input.id, 'approved');
@@ -200,6 +206,51 @@ async function write(env, system, user) {
     const message = /key/i.test(err.message) ? "The school's AI key isn't working. Let your admin know." : err.message;
     throw new Refusal(502, message);
   }
+}
+
+// ---------- practice routes ----------
+// The Routes tab sends the points it picked (start, practice spots, back to start) and this asks the free
+// OpenRouteService for the driving route with the school's key (the ORS_KEY secret), so no phone ever
+// holds it. Only coordinates go out: no names, no notes.
+const ORS_URL = 'https://api.openrouteservice.org/v2/directions/driving-car/geojson';
+const MAX_POINTS = 40;
+
+async function drivingRoute(env, input) {
+  if (!env.ORS_KEY) throw new Refusal(503, "Routes aren't set up on the school server yet. Let your admin know.");
+  const points = Array.isArray(input.points) ? input.points : [];
+  if (points.length < 2 || points.length > MAX_POINTS) throw new Refusal(400, `A route needs 2 to ${MAX_POINTS} points.`);
+  const coordinates = points.map((p) => {
+    const lat = Number(p?.[0]);
+    const lon = Number(p?.[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) throw new Refusal(400, 'One of the route points is off the map.');
+    return [lon, lat];
+  });
+  // How far each point may be moved to reach a road (GPS in a driveway needs more room than a spot on a street).
+  const radiuses = coordinates.map((_, i) => Math.min(Math.max(Number(input.radiuses?.[i]) || 60, 10), 1000));
+  // Which way to be heading at a point ([] for any), so a left at a light is driven toward the light.
+  const bearings = coordinates.map((_, i) => {
+    const b = input.bearings?.[i];
+    return Array.isArray(b) && b.length === 2 && b.every(Number.isFinite) ? [((b[0] % 360) + 360) % 360, Math.min(Math.max(b[1], 10), 180)] : [];
+  });
+  const body = { coordinates, radiuses, instructions: true, continue_straight: true, units: 'm', elevation: false };
+  if (bearings.some((b) => b.length)) body.bearings = bearings;
+  if (input.avoidFreeways) body.options = { avoid_features: ['highways'] };
+  const res = await fetch(ORS_URL, {
+    method: 'POST',
+    headers: { Authorization: env.ORS_KEY, 'Content-Type': 'application/json', Accept: 'application/json, application/geo+json' },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return new Response(res.body, { status: 200, headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+  let detail = '';
+  try {
+    detail = (await res.json())?.error?.message || '';
+  } catch {
+    // not JSON; the status says enough
+  }
+  if (res.status === 401 || res.status === 403) throw new Refusal(502, "The school's route key isn't working. Let your admin know.");
+  if (res.status === 429) throw new Refusal(429, 'The free route service is busy or used up for today. Try again in a minute.');
+  // ORS names the point it couldn't reach ("coordinate 3"), which the app uses to swap that spot out.
+  throw new Refusal(422, detail || "Couldn't find a driving route through those spots.");
 }
 
 async function claimAdmin(phone, input, env) {

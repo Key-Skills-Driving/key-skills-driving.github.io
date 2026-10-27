@@ -12,10 +12,11 @@ A home-screen app for driving instructors at Key Skills Driving School. Talk thr
 
 ## The school server (`worker/`)
 
-A Cloudflare Worker (`ksds-lessons`) plus a D1 database holds the school's Gemini key and the list of approved phones, so staff never need a key. Each phone makes up an id and secret token; the server keeps only a hash. The first phone to tap **Become the admin** claims the school and becomes its one **master admin**; after that only admins can approve, remove or promote phones, or change the school key (which is never sent back to a phone). The master admin can't be removed or demoted by anyone, and only they can pass the role on (**Make master admin** on the Phones screen, behind a tick box and a confirmation). Wipe App is refused on the master admin's phone until the role has been passed on. The server builds the prompt itself (it imports `docs/ai.js`), only answers the app's own origin, allows 200 breakdowns per phone per day, and keeps no lesson text or logs.
+A Cloudflare Worker (`ksds-lessons`) plus a D1 database holds the school's Gemini key and the list of approved phones, so staff never need a key. It also fetches practice routes for approved phones, with the school's OpenRouteService key (only coordinates are sent). Each phone makes up an id and secret token; the server keeps only a hash. The first phone to tap **Become the admin** claims the school and becomes its one **master admin**; after that only admins can approve, remove or promote phones, or change the school key (which is never sent back to a phone). The master admin can't be removed or demoted by anyone, and only they can pass the role on (**Make master admin** on the Phones screen, behind a tick box and a confirmation). Wipe App is refused on the master admin's phone until the role has been passed on. The server builds the prompt itself (it imports `docs/ai.js`), only answers the app's own origin, allows 200 breakdowns per phone per day, and keeps no lesson text or logs.
 
 Notifications use Web Push (`@block65/webcrypto-web-push`): the VAPID public key is in `wrangler.toml` and `docs/app.js`, the private key is the `VAPID_PRIVATE_KEY` secret. Deploy with `npx wrangler deploy` from `worker/`. For local testing, `wrangler dev` on port 8787 (the app switches to it automatically on localhost) needs `http://localhost:8787` temporarily added to the `connect-src` list in `docs/index.html`.
 - **Review:** the school's "Please leave a review" card with a scannable QR code, and a Send button.
+- **Routes:** a practice-route maker. Pick a start (the office, or **Here** from the phone's GPS when you're at a student's house), a length (30 min to 2½ hr), the student's level (Beginner keeps off freeways; Test-ready leans toward the office area) and the skills to practise: lefts at lights, unprotected lefts, roundabouts, school zones, lane changes, freeway merging, railroad crossings, quiet streets, parking lots. **Build route** makes a loop back to the start through real spots for those skills, sized to the time, and shows it on a dark map with numbered stops ("3. Roundabout from Price Rd"), the total time and miles. Each stop is checked against the route's own directions (it really turns left there, really goes through that roundabout) and left out if not. **Shuffle** makes a different loop, **Save** keeps it with a name (in backups too), and **Google Maps** / **Apple Maps** (iPhone only) hands it over for voice directions, up to 9 stops. Spots come from OpenStreetMap and can be out of date, so drive a route yourself before using it with a student.
 - **Private:** everything stays on the phone (IndexedDB). API keys only leave the phone to call Google or OpenAI, and aren't included in backups. Breakdowns never use names (the student is always "the student"). On Gemini's free tier Google may use what's sent to improve its products, so the app suggests leaving last names out of the dictation.
 - **Screen stays on** while you dictate, while a breakdown is being written, and while the review card is showing.
 - **Reload:** pull down from the top of any screen (the installed app has no browser bar), or tap Reload at the bottom of Settings. It checks for a new version first, so one pull picks up an update.
@@ -31,3 +32,19 @@ Plain HTML/CSS/JS with no build step. The site lives in `docs/`.
 On every release, bump `VERSION` in `docs/app.js` and `CACHE` in `docs/sw.js` together, or installed phones keep the old files.
 
 `docs/vendor/qrcode.js` is [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) 2.0.4 (MIT).
+`docs/vendor/maplibre/` is [MapLibre GL JS](https://github.com/maplibre/maplibre-gl-js) 6.14.0 (BSD-3-Clause, license file alongside).
+
+### Route data
+
+The Routes tab never asks a map server for spots. They're prepared ahead of time from OpenStreetMap
+(© OpenStreetMap contributors, ODbL) for the school's area, Phoenix and Tempe down to Sun Lakes and over to Queen Creek:
+
+```
+python -I tools/route-spots/fetch.py   # downloads the area from the Overpass API (slow; skips cells it already has)
+python -I tools/route-spots/build.py   # writes docs/route-spots/*.json
+```
+
+Then release as usual. Road routes come from [OpenRouteService](https://openrouteservice.org/) through the school
+server, which keeps the key as the `ORS_KEY` secret (`npx wrangler secret put ORS_KEY` from `worker/`). The free key
+allows 200 route requests a day for the whole school; one build uses up to 4. Map tiles are
+[OpenFreeMap](https://openfreemap.org/)'s free "dark" style.

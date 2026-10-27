@@ -3,3 +3,5 @@ node_modules/
 guide/
 .wrangler/
 .dev.vars
+tools/route-spots/.cache/
+__pycache__/

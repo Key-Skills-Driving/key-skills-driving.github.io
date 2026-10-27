@@ -5,9 +5,12 @@ import {
   DEFAULT_CLAUDE_MODEL, writeWithClaude, checkClaudeKey,
 } from './ai.js';
 import { qrSvg } from './review.js';
+import {
+  setupRoutes, parseRoutesPath, renderRoutes, leaveRoutes, routeActions, exportRoutes, importRoutes, forgetRoutes,
+} from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.9.9';
+const VERSION = '3.10.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -65,6 +68,7 @@ const ICON = {
   mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4M8 22h8"/></svg>',
   bookmark: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>',
   starLine: '<svg viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,2.5 14.25,9.2 21.3,9.2 15.6,13.3 17.7,20 12,15.9 6.3,20 8.4,13.3 2.7,9.2 9.75,9.2"/></svg>',
+  route: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="5" r="2.5"/><path d="M8.5 19H16a3.5 3.5 0 0 0 0-7H8a3.5 3.5 0 0 1 0-7h7.5"/></svg>',
   star: '<svg class="star-ico" viewBox="0 0 24 24" aria-hidden="true"><polygon points="12,2 14.25,8.91 21.51,8.91 15.63,13.18 17.88,20.09 12,15.82 6.12,20.09 8.37,13.18 2.49,8.91 9.75,8.91"/></svg>',
   copy: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
   zap: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>',
@@ -273,7 +277,7 @@ async function syncSchool({ force = false } = {}) {
   }
   const after = JSON.stringify([state.device.status, state.device.admin, state.device.adminExists, state.pendingCount]);
   const typing = document.activeElement?.matches?.('input, textarea');
-  if (before !== after && !typing && ['write', 'settings'].includes(parseRoute().name)) render();
+  if (before !== after && !typing && ['write', 'settings', 'routes'].includes(parseRoute().name)) render();
 }
 
 let draftTimer;
@@ -306,6 +310,7 @@ function parseRoute() {
       if (p[1]) return { name: 'item', id: p[1] };
       return { name: 'saved' };
     case 'review': return { name: 'review' };
+    case 'routes': return parseRoutesPath(p);
     case 'settings': return { name: 'settings' };
     case 'modify': return { name: 'modify', id: null }; // the fresh breakdown on the first tab
     case 'phones': return { name: 'phones' };
@@ -327,15 +332,17 @@ function go(path, replace = false) {
 
 function render() {
   const r = parseRoute();
-  const key = `${r.name}:${r.id ?? ''}`;
+  const key = `${r.name}:${r.view ?? ''}:${r.id ?? ''}`;
   document.body.classList.remove('typing');
   keepAwake('review', r.name === 'review');
   keepAwake('dictating', false); // re-rendering replaces the notes box, so it's no longer focused
+  if (r.name !== 'routes') leaveRoutes(); // frees the map; phones only allow a few at once
   switch (r.name) {
     case 'saved': renderSaved(); break;
     case 'item': renderItem(r.id); break;
     case 'modify': renderModify(r.id); break;
     case 'review': renderReview(); break;
+    case 'routes': renderRoutes(r); break;
     case 'settings': renderSettings(); break;
     case 'phones': renderPhones(); break;
     default: renderWrite();
@@ -362,6 +369,7 @@ function tabbar(active) {
   return `<nav class="tabbar" aria-label="Sections"><div class="tabbar-inner">
     ${tab('write', '#/', ICON.mic, 'Break down')}
     ${tab('saved', '#/saved', ICON.bookmark, 'Saved')}
+    ${tab('routes', '#/routes', ICON.route, 'Routes')}
     ${tab('review', '#/review', ICON.starLine, 'Review')}
   </div></nav>`;
 }
@@ -1704,7 +1712,7 @@ function saveReviewSettings() {
 }
 
 async function backup() {
-  const data = { app: 'lesson-notes', version: 2, exportedAt: new Date().toISOString(), items: [...state.items.values()], style: state.settings.style };
+  const data = { app: 'lesson-notes', version: 2, exportedAt: new Date().toISOString(), items: [...state.items.values()], style: state.settings.style, routes: exportRoutes() };
   const name = `ksds-breakdowns-backup-${new Date().toISOString().slice(0, 10)}.json`;
   const file = new File([JSON.stringify(data, null, 2)], name, { type: 'application/json' });
   try {
@@ -1736,6 +1744,7 @@ function wipeWarning() {
     '',
     'This deletes, from KSDS Lessons only:',
     '• All saved and prewritten breakdowns',
+    '• Saved practice routes',
     '• Your AI key',
     '• Your settings and review card changes',
     '• Any breakdown you were in the middle of',
@@ -1764,6 +1773,7 @@ async function wipeApp() {
     return;
   }
   state.items.clear();
+  forgetRoutes();
   state.settings = defaultSettings();
   state.device = defaultDevice();
   state.phones = null;
@@ -1823,8 +1833,11 @@ async function restoreFrom(input) {
     saveSettings();
     styleRestored = true;
   }
+  // Saved routes come back alongside, skipping any this phone already has.
+  const routesRestored = await importRoutes(data.routes).catch(() => 0);
   if (!items.length) {
-    toast(styleRestored ? 'Your style was restored. The breakdowns were already here.' : 'Everything in that backup is already here');
+    const also = [styleRestored && 'your style', routesRestored && `${routesRestored} saved route${routesRestored === 1 ? '' : 's'}`].filter(Boolean);
+    toast(also.length ? `Restored ${also.join(' and ')}. The breakdowns were already here.` : 'Everything in that backup is already here');
     return;
   }
   if (!confirm(`Restore ${items.length} breakdown${items.length === 1 ? '' : 's'} from this backup?`)) return;
@@ -1991,6 +2004,7 @@ const actions = {
     render();
   },
   'save-review-settings': () => saveReviewSettings(),
+  ...routeActions,
   backup: () => backup(),
   restore: () => $('#restore-file').click(),
   'wipe-app': () => wipeApp(),
@@ -2142,6 +2156,7 @@ function setupPullToReload() {
     pulling = false;
     if (reloading || e.touches.length !== 1 || state.busy || state.modify?.busy || !atTop()) return;
     if (e.target.closest?.('textarea, input, select')) return; // scrolling or selecting inside a box
+    if (e.target.closest?.('.rt-map')) return; // dragging the route map around
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     armed = true;
@@ -2209,6 +2224,9 @@ async function start() {
       <p>${esc(err?.message || err)}</p><p>Close the app completely and open it again.</p></div></main>`;
     return;
   }
+  setupRoutes({
+    app, header, backLink, tabbar, esc, toast, school, db, go, platform, device: () => state.device,
+  });
   addEventListener('hashchange', render);
   render();
   registerServiceWorker();
