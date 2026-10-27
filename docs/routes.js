@@ -560,19 +560,29 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
 // ---------- hand-off to Maps ----------
 
 // Starts from wherever the phone is, through each stop in order, and back to the start.
-function drivePoints(route) {
-  const pts = route.stops.flatMap((s) => s.drive).slice(0, MAX_STOPS);
+// Keeps the first and last and spreads the rest evenly, when there are more points than a link can take.
+function spread(list, n) {
+  if (list.length <= n) return list;
+  return Array.from({ length: n }, (_, i) => list[Math.round((i * (list.length - 1)) / (n - 1))]);
+}
+
+// From wherever the phone is, through each stop in order, and back to the start. With viaStart (test
+// routes, often opened at a student's house) it goes to the start first, so the course is driven
+// from its beginning instead of joining it at the second turn; that uses one of the 9 stops.
+function drivePoints(route, viaStart) {
+  const stops = route.stops.flatMap((s) => s.drive);
+  const pts = viaStart ? [route.start, ...spread(stops, MAX_STOPS - 1)] : spread(stops, MAX_STOPS);
   return pts.map((p) => `${p.lat.toFixed(5)},${p.lon.toFixed(5)}`);
 }
 
-function googleLink(route) {
+function googleLink(route, viaStart) {
   const q = new URLSearchParams({ api: '1', destination: `${route.start.lat.toFixed(5)},${route.start.lon.toFixed(5)}`, travelmode: 'driving', dir_action: 'navigate' });
-  q.set('waypoints', drivePoints(route).join('|'));
+  q.set('waypoints', drivePoints(route, viaStart).join('|'));
   return `https://www.google.com/maps/dir/?${q}`;
 }
 
-function appleLink(route) {
-  const parts = [`destination=${route.start.lat.toFixed(5)},${route.start.lon.toFixed(5)}`, ...drivePoints(route).map((p) => `waypoint=${p}`), 'mode=driving'];
+function appleLink(route, viaStart) {
+  const parts = [`destination=${route.start.lat.toFixed(5)},${route.start.lon.toFixed(5)}`, ...drivePoints(route, viaStart).map((p) => `waypoint=${p}`), 'mode=driving'];
   return `https://maps.apple.com/directions?${parts.join('&')}`;
 }
 
@@ -858,12 +868,13 @@ function renderBuilder() {
 function renderRoute(route, mode) {
   rs.view = { route, mode };
   const student = mode === 'student';
+  const viaStart = mode === 'test' || student; // test routes get opened away from the start, often at home
   const ios = deps.platform() !== 'android';
   const title = { new: 'Practice route', saved: 'Saved route', test: 'Test route', student: 'Practice route' }[mode];
   const total = `${minutesLabel(Math.round(route.seconds / 60))} · ${miles(route.meters)} mi · ${route.stops.length} ${route.fromTurns ? 'turns' : 'stops'}`;
   const from = route.startKind === 'here' ? 'From where you were' : 'From the office';
   const about = student
-    ? `${route.startKind === 'office' ? 'Start at Key Skills Driving School, 6909 W Ray Rd, Chandler (the S pin)' : 'Start at the S pin'}, then tap ${ios ? 'Google Maps or Apple Maps' : 'Google Maps'}.`
+    ? `Tap ${ios ? 'Google Maps or Apple Maps' : 'Google Maps'} from anywhere, even home: it takes you to the start first (${route.startKind === 'office' ? 'Key Skills Driving School, 6909 W Ray Rd, Chandler, ' : ''}the S pin), then around the route.`
     : route.fromTurns ? `${from} · made from a list of turns` : `${from} · ${lengthLabel(route.minutes)} lesson · ${levelLabel(route.level)}`;
   const missing = route.missing?.length ? `<p class="hint">Nothing near enough for: ${esc(route.missing.map((k) => SKILLS.find(([id]) => id === k)?.[1]).join(', '))}.</p>` : '';
   // A typed-in route says plainly where it doesn't match the turns, before anyone saves it.
@@ -872,7 +883,7 @@ function renderRoute(route, mode) {
     : '';
   // The Maps apps take 9 points; on a longer typed-in route the list is the full set of turns.
   const handoff = route.fromTurns && route.stops.length > MAX_STOPS && !student
-    ? `<p class="hint">Google and Apple Maps get 9 of the ${route.stops.length} turns, spread along the route. The list below has every turn.</p>` : '';
+    ? `<p class="hint">Google and Apple Maps get ${viaStart ? MAX_STOPS - 1 : MAX_STOPS} of the ${route.stops.length} turns, spread along the route. The list below has every turn.</p>` : '';
   const fine = student
     ? 'Practice with a licensed adult in the front seat. Road signs and signals come first: the map can be out of date.'
     : 'Spots come from OpenStreetMap and can be out of date. Drive a route yourself before using it with a student.';
@@ -889,8 +900,8 @@ function renderRoute(route, mode) {
       ${problems}
       <span class="label">Drive it</span>
       <div class="${ios ? 'two' : ''} rt-drive">
-        <a class="btn btn-primary${ios ? '' : ' btn-block'}" href="${esc(googleLink(route))}" target="_blank" rel="noopener">Google Maps</a>
-        ${ios ? `<a class="btn btn-primary" href="${esc(appleLink(route))}" target="_blank" rel="noopener">Apple Maps</a>` : ''}
+        <a class="btn btn-primary${ios ? '' : ' btn-block'}" href="${esc(googleLink(route, viaStart))}" target="_blank" rel="noopener">Google Maps</a>
+        ${ios ? `<a class="btn btn-primary" href="${esc(appleLink(route, viaStart))}" target="_blank" rel="noopener">Apple Maps</a>` : ''}
       </div>
       ${handoff}
       <div id="rt-actions">${routeButtons(route, mode)}</div>
