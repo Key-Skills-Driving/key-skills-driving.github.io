@@ -6,11 +6,11 @@ import {
 } from './ai.js';
 import { qrSvg } from './review.js';
 import {
-  setupRoutes, parseRoutesPath, renderRoutes, leaveRoutes, routeActions, exportRoutes, importRoutes, forgetRoutes,
+  setupRoutes, parseRoutesPath, renderRoutes, renderShared, leaveRoutes, routeActions, routesInput, exportRoutes, importRoutes, forgetRoutes,
 } from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.10.0';
+const VERSION = '3.11.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -311,6 +311,7 @@ function parseRoute() {
       return { name: 'saved' };
     case 'review': return { name: 'review' };
     case 'routes': return parseRoutesPath(p);
+    case 't': return { name: 'shared', id: p[1] || '' }; // a test route sent to a student
     case 'settings': return { name: 'settings' };
     case 'modify': return { name: 'modify', id: null }; // the fresh breakdown on the first tab
     case 'phones': return { name: 'phones' };
@@ -336,13 +337,14 @@ function render() {
   document.body.classList.remove('typing');
   keepAwake('review', r.name === 'review');
   keepAwake('dictating', false); // re-rendering replaces the notes box, so it's no longer focused
-  if (r.name !== 'routes') leaveRoutes(); // frees the map; phones only allow a few at once
+  if (r.name !== 'routes' && r.name !== 'shared') leaveRoutes(); // frees the map; phones only allow a few at once
   switch (r.name) {
     case 'saved': renderSaved(); break;
     case 'item': renderItem(r.id); break;
     case 'modify': renderModify(r.id); break;
     case 'review': renderReview(); break;
     case 'routes': renderRoutes(r); break;
+    case 'shared': renderShared(r.id); break;
     case 'settings': renderSettings(); break;
     case 'phones': renderPhones(); break;
     default: renderWrite();
@@ -2044,6 +2046,8 @@ document.addEventListener('input', (e) => {
     $('#results').innerHTML = savedResults();
   } else if (t.id === 'f-paste' && e.inputType === 'insertFromPaste') {
     useFallbackPaste();
+  } else {
+    routesInput(t);
   }
 });
 
@@ -2068,7 +2072,7 @@ document.addEventListener('change', (e) => {
 
 // Hide the tab bar while the keyboard is up so it doesn't float over what you're typing.
 const TYPING = 'textarea, select, input:not([type=checkbox]):not([type=file])';
-const DICTATION_BOXES = new Set(['raw', 'mod-change', 'st-example']);
+const DICTATION_BOXES = new Set(['raw', 'mod-change', 'st-example', 'rt-turns']);
 document.addEventListener('focusin', (e) => {
   if (e.target.matches?.(TYPING)) document.body.classList.add('typing');
   // Dictating is hands-off, so without this the screen can lock mid-sentence.
@@ -2225,7 +2229,7 @@ async function start() {
     return;
   }
   setupRoutes({
-    app, header, backLink, tabbar, esc, toast, school, db, go, platform, device: () => state.device,
+    app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device: () => state.device, appUrl: APP_URL,
   });
   addEventListener('hashchange', render);
   render();

@@ -922,3 +922,9 @@ textarea.big { min-height: 170px; }
 }
 .rt-stops li.rt-back { color: var(--ink-2); counter-increment: none; }
 .rt-stops li.rt-back::before { content: "S"; background: #fff; color: var(--header); }
+.list-title.rt-first { margin-top: 4px; }
+.rt-none { margin: 0 4px 6px; }
+.rt-problems { display: block; }
+.rt-problems ul { margin: 6px 0 0; padding-left: 18px; }
+.rt-problems li + li { margin-top: 4px; }
+#rt-turns { min-height: 220px; }

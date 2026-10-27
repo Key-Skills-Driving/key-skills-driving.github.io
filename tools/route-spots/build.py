@@ -19,6 +19,9 @@ to, so the router snaps to the right carriageway:
   pl  parking lot           [lat, lon, lotName, roadName]           (lat/lon on a parking aisle)
 4-way stops are left out on purpose: almost none are tagged in this area, and guessing from stop signs
 picked up parking-lot exits.
+
+It also writes docs/route-spots/streets/<cell>.json, where each pair of named streets meets, for test routes an
+admin types in as a list of turns: {"n": [street names], "j": [[nameIndexA, nameIndexB, lat, lon], ...]}.
 """
 import glob, json, math, os, random, sys
 from collections import defaultdict
@@ -510,6 +513,33 @@ for r in sorted(roads.values(), key=lambda x: x.id):
     taken.add(key)
     spots["qs"].append([r5(p[0]), r5(p[1]), r.name])
 
+# ---------- where named streets meet (for test routes typed in as a list of turns) ----------
+# One point per pair of street names per crossing; a divided road's 2-4 crossing nodes are averaged.
+
+crossings = defaultdict(list)  # (nameA, nameB) -> [points]
+for nid, lst in on_node.items():
+    names = sorted({r.name for r, _ in lst if r.public and r.name and 1 <= r.rank <= 6 and not r.link})
+    if len(names) < 2:
+        continue
+    p = coord[nid]
+    for i in range(len(names)):
+        for k in range(i + 1, len(names)):
+            crossings[(names[i], names[k])].append(p)
+street_cells = defaultdict(list)
+for pair, pts in crossings.items():
+    groups = []
+    for p in pts:
+        for g in groups:
+            if dist(g[0], p) < 70:
+                g.append(p)
+                break
+        else:
+            groups.append([p])
+    for g in groups:
+        c = (sum(q[0] for q in g) / len(g), sum(q[1] for q in g) / len(g))
+        key = f"{math.floor(c[0] / CELL + 1e-9) * CELL:.2f}_{math.floor(c[1] / CELL + 1e-9) * CELL:.2f}"
+        street_cells[key].append((pair[0], pair[1], r5(c[0]), r5(c[1])))
+
 # ---------- write one file per cell ----------
 
 os.makedirs(OUT, exist_ok=True)
@@ -521,9 +551,22 @@ for kind, items in spots.items():
         key = f"{math.floor(s[0] / CELL + 1e-9) * CELL:.2f}_{math.floor(s[1] / CELL + 1e-9) * CELL:.2f}"
         cells[key][kind].append(s)
 covered = sorted({os.path.basename(f)[2:-5] for f in files})
+os.makedirs(os.path.join(OUT, "streets"), exist_ok=True)
+for old in glob.glob(os.path.join(OUT, "streets", "*.json")):
+    os.remove(old)
 for key in covered:
     with open(os.path.join(OUT, f"{key}.json"), "w", encoding="utf-8") as fh:
         json.dump(cells.get(key, {}), fh, ensure_ascii=False, separators=(",", ":"))
+    # streets/<cell>.json: {"n": [street names], "j": [[nameIndexA, nameIndexB, lat, lon], ...]}
+    names, index, rows = [], {}, []
+    for a, b, la, lo in street_cells.get(key, []):
+        for nm in (a, b):
+            if nm not in index:
+                index[nm] = len(names)
+                names.append(nm)
+        rows.append([index[a], index[b], la, lo])
+    with open(os.path.join(OUT, "streets", f"{key}.json"), "w", encoding="utf-8") as fh:
+        json.dump({"n": names, "j": rows}, fh, ensure_ascii=False, separators=(",", ":"))
 with open(os.path.join(OUT, "index.json"), "w", encoding="utf-8") as fh:
     json.dump({"v": 1, "built": date.today().isoformat(), "cell": CELL, "cells": covered}, fh, separators=(",", ":"))
 print({k: len(v) for k, v in sorted(spots.items())})

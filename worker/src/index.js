@@ -75,6 +75,9 @@ async function handle(request, env, ctx) {
       return { text: await write(env, systemPrompt(text(input.extra, MAX.extra), normalizeStyle(input.style)), user) };
     }
     case 'POST /route': await allowWriting(phone, env); return drivingRoute(env, input);
+    case 'GET /test-routes': requireApproved(phone); return listTestRoutes(env);
+    case 'POST /test-routes': await requireAdmin(phone); return addTestRoute(env, phone, input);
+    case 'POST /test-routes/delete': await requireAdmin(phone); return deleteTestRoute(env, input.id);
     case 'POST /admin/claim': return claimAdmin(phone, input, env);
     case 'GET /admin/phones': await requireAdmin(phone); return listPhones(env);
     case 'POST /admin/approve': await requireAdmin(phone); return setStatus(env, input.id, 'approved');
@@ -82,7 +85,10 @@ async function handle(request, env, ctx) {
     case 'POST /admin/role': await requireAdmin(phone); return setAdmin(env, phone, input.id, !!input.admin);
     case 'POST /admin/transfer': await requireAdmin(phone); return transferOwner(env, phone, input.id, input.confirm);
     case 'POST /admin/key': await requireAdmin(phone); return saveKey(env, input.key);
-    default: throw new Refusal(404, 'Not found.');
+    default:
+      // A student's link to one test route: no approval needed, the random id is the key.
+      if (request.method === 'GET' && pathname.startsWith('/shared/')) return sharedRoute(env, pathname.slice('/shared/'.length));
+      throw new Refusal(404, 'Not found.');
   }
 }
 
@@ -251,6 +257,56 @@ async function drivingRoute(env, input) {
   if (res.status === 429) throw new Refusal(429, 'The free route service is busy or used up for today. Try again in a minute.');
   // ORS names the point it couldn't reach ("coordinate 3"), which the app uses to swap that spot out.
   throw new Refusal(422, detail || "Couldn't find a driving route through those spots.");
+}
+
+// ---------- test routes ----------
+// Routes the school uses for road-test days. Admins add them from a route they built; every approved
+// phone sees them; a student gets one through its link. Only what the app drew is stored: no names.
+const MAX_TEST_ROUTES = 50;
+const MAX_ROUTE_BYTES = 60000;
+const SHARE_ID = /^[A-Za-z0-9]{12}$/;
+
+function requireApproved(phone) {
+  if (phone.row?.status !== 'approved') throw new Refusal(403, 'Still waiting for your admin to approve this phone.');
+}
+
+function shareId() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  return [...crypto.getRandomValues(new Uint8Array(12))].map((b) => chars[b % chars.length]).join('');
+}
+
+async function listTestRoutes(env) {
+  const { results } = await env.DB.prepare('SELECT id, name, data, created_at FROM test_routes ORDER BY created_at').all();
+  return { routes: results.map((r) => ({ ...JSON.parse(r.data), id: r.id, name: r.name, createdAt: r.created_at })) };
+}
+
+async function addTestRoute(env, phone, input) {
+  const name = text(input.name, 80, 'route name');
+  const route = input.route;
+  // Built routes have up to 9 stops; one typed in as a list of turns can have up to 39.
+  const ok = route && typeof route === 'object' && typeof route.line === 'string' && Array.isArray(route.stops)
+    && route.stops.length <= 39 && Number.isFinite(route.start?.lat) && Number.isFinite(route.start?.lon);
+  if (!ok) throw new Refusal(400, "That route didn't come through right. Build it again and retry.");
+  const { line, start, startKind, minutes, level, seconds, meters, stops } = route;
+  const data = JSON.stringify({ line, start, startKind, minutes, level, seconds, meters, stops, fromTurns: route.fromTurns === true });
+  if (data.length > MAX_ROUTE_BYTES) throw new Refusal(413, 'That route is too long to share.');
+  const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM test_routes').first();
+  if (count.n >= MAX_TEST_ROUTES) throw new Refusal(409, `There are already ${MAX_TEST_ROUTES} test routes. Delete one first.`);
+  const id = shareId();
+  await env.DB.prepare('INSERT INTO test_routes (id, name, data, created_by, created_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(id, name, data, phone.row?.name || '', Date.now()).run();
+  return { id, ...(await listTestRoutes(env)) };
+}
+
+async function deleteTestRoute(env, id) {
+  await env.DB.prepare('DELETE FROM test_routes WHERE id = ?').bind(String(id)).run();
+  return listTestRoutes(env);
+}
+
+async function sharedRoute(env, id) {
+  const row = SHARE_ID.test(id) ? await env.DB.prepare('SELECT id, name, data FROM test_routes WHERE id = ?').bind(id).first() : null;
+  if (!row) throw new Refusal(404, "This practice route isn't available any more. Ask your instructor for a new link.");
+  return { ...JSON.parse(row.data), id: row.id, name: row.name };
 }
 
 async function claimAdmin(phone, input, env) {

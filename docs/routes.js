@@ -1,5 +1,5 @@
 // Routes tab: a practice-route maker. Pick a start (the office, or Here from the phone's GPS), a length,
-// the student's level and the skills to practise; it builds a loop that leaves from the start, passes
+// the student's level and the skills to practice; it builds a loop that leaves from the start, passes
 // real spots for those skills and comes back, sized to the time. Drive it hands the loop to Google Maps
 // or Apple Maps for voice directions. Everything is set up before the car moves.
 //
@@ -24,11 +24,12 @@ const SKILLS = [
   ['pl', 'Parking lots'],
 ];
 const MAX_STOPS = 9; // the most Google Maps takes from a link
+const MAX_TURNS = 38; // a typed-in test route: the route request takes 40 points, start and finish included
 const TOLERANCE_MIN = 5; // a route counts as fitting the lesson within this many minutes
 const MAX_TRIES = 4; // route requests per build; the school's free key allows 200 a day for everyone
 const SNAP_M = 35; // a spot counts as passed when the route goes within this many meters of it
 
-let deps; // what app.js shares: app, header, backLink, tabbar, esc, toast, school, db, go, platform, device
+let deps; // what app.js shares: app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device, appUrl
 const rs = {
   start: 'office',
   minutes: 60,
@@ -37,8 +38,14 @@ const rs = {
   route: null, // the one just built (not saved until Save is tapped)
   saved: [],
   loaded: false,
+  tests: [], // the school's test routes, shared by every phone (a copy stays on the phone for no-signal days)
+  testsLoaded: false,
+  testsFetched: 0,
+  view: null, // { route, mode } on screen; mode is new | saved | test | student
   building: null, // { status, controller } while a build runs
-  naming: false, // the Save name box is open
+  naming: null, // the name box is open: 'save' (on this phone) or 'test' (for the school)
+  turnsText: '', // a test route typed in as turns, kept while you go back and fix a line
+  turnsStart: 'office',
 };
 
 export function setupRoutes(shared) {
@@ -381,6 +388,175 @@ async function buildRoute(settings, seed, signal, onStatus) {
   return { ...best.route, missing };
 }
 
+// ---------- a test route typed in as turns ----------
+// An admin pastes the school's test route as a list of turns ("Right on Ray Rd", "Left on Kyrene Rd", …).
+// Each turn happens where the street you're on meets the next one, so the app finds those crossings
+// (each the nearest one to the last, starting from the start), asks for the road route through them,
+// and checks every turn goes the way its line says. Lines with no street ("Parallel park") become notes.
+
+const SUFFIXES = {
+  street: 'st', st: 'st', road: 'rd', rd: 'rd', avenue: 'ave', ave: 'ave', av: 'ave', boulevard: 'blvd', blvd: 'blvd',
+  drive: 'dr', dr: 'dr', lane: 'ln', ln: 'ln', parkway: 'pkwy', pkwy: 'pkwy', place: 'pl', pl: 'pl', court: 'ct', ct: 'ct',
+  circle: 'cir', cir: 'cir', way: 'way', trail: 'trl', trl: 'trl', highway: 'hwy', hwy: 'hwy', terrace: 'ter', ter: 'ter', loop: 'loop',
+};
+
+// "S. Kyrene Road" and "Kyrene Rd" are the same street; "Kyrene" alone matches either.
+function streetKey(name) {
+  const words = String(name || '').toLowerCase().replace(/[.,']/g, ' ').split(/\s+/).filter((w) => w && w !== 'the');
+  if (words.length > 1 && /^(n|s|e|w|north|south|east|west)$/.test(words[0])) words.shift();
+  const last = words.at(-1);
+  const suffix = words.length > 1 && SUFFIXES[last] ? SUFFIXES[last] : '';
+  if (suffix) words[words.length - 1] = suffix;
+  return { full: words.join(' '), base: suffix ? words.slice(0, -1).join(' ') : words.join(' '), suffix };
+}
+
+const sameStreet = (typed, mapped) => (typed.suffix ? typed.full === mapped.full : typed.base === mapped.base);
+
+// One turn per line. "3. Turn left at the light onto Kyrene Rd heading south" -> left, Kyrene Rd.
+export function parseTurns(text) {
+  const turns = [];
+  const startNotes = [];
+  String(text || '').split(/\r?\n/).forEach((raw, i) => {
+    const line = raw.replace(/^\s*(\d+\s*[.):-]|[-*•])\s*/, '').trim();
+    if (!line) return;
+    const dir = (line.match(/\b(left|right|u-?turn|straight|continue)\b/i)?.[1] || '').toLowerCase().replace('-', '');
+    let street = line.match(/\b(?:onto|on to|on)\s+(?:the\s+)?([0-9A-Za-z][\w .'-]*?)(?=\s*(?:[,.;(]|\b(?:and|then|until|for|toward|towards|heading|going|at|to|past|after)\b|$))/i)?.[1]?.trim();
+    // "Parallel park on the right" names a side, not a street.
+    if (street && /^(right|left|right side|left side|light|corner|curb|shoulder|street|road)$/i.test(street)) street = '';
+    const key = street && streetKey(street);
+    const prev = turns.at(-1);
+    // A line on the street you're already on ("Lane change on Ray Rd") is a note, not a turn.
+    if (street && !(prev && key.base === prev.key.base)) {
+      turns.push({ line: i + 1, text: line, dir: dir === 'continue' ? 'straight' : dir, street, key, notes: [] });
+    } else if (prev) prev.notes.push(line);
+    else startNotes.push(line);
+  });
+  return { turns, startNotes };
+}
+
+const streetCells = new Map();
+
+async function crossingsAround(center, meters) {
+  if (!spotIndex) spotIndex = await getJson('route-spots/index.json');
+  const have = new Set(spotIndex.cells);
+  const north = offset(center, meters, 0).lat;
+  const south = offset(center, meters, 180).lat;
+  const east = offset(center, meters, 90).lon;
+  const west = offset(center, meters, 270).lon;
+  const keys = [];
+  for (let lat = Math.floor(south * 10); lat <= Math.floor(north * 10); lat++) {
+    for (let lon = Math.floor(west * 10); lon <= Math.floor(east * 10); lon++) {
+      const key = cellKey(lat / 10 + 0.00001, lon / 10 + 0.00001);
+      if (have.has(key)) keys.push(key);
+    }
+  }
+  await Promise.all(keys.filter((k) => !streetCells.has(k)).map(async (k) => {
+    const { n, j } = await getJson(`route-spots/streets/${k}.json`);
+    const named = n.map((name) => ({ name, key: streetKey(name) }));
+    streetCells.set(k, j.map(([a, b, lat, lon]) => ({ a: named[a], b: named[b], at: { lat, lon } })));
+  }));
+  return keys.flatMap((k) => streetCells.get(k));
+}
+
+// Turns a line bearing difference into what a driver would call it.
+function turnWay(before, at, after) {
+  const angle = turnAngle(bearing(before, at), bearing(at, after));
+  return angle < -35 ? 'left' : angle > 35 ? 'right' : 'straight';
+}
+const turnAngle = (hIn, hOut) => ((hOut - hIn + 540) % 360) - 180;
+
+// The point `meters` along the route line from index i, forward (+1) or back (-1).
+function alongLine(line, i, meters, step) {
+  let walked = 0;
+  let k = i;
+  while (k + step >= 0 && k + step < line.length && walked < meters) {
+    walked += dist(line[k], line[k + step]);
+    k += step;
+  }
+  return line[k];
+}
+
+async function buildFromTurns(text, startKind, signal, onStatus) {
+  const { turns, startNotes } = parseTurns(text);
+  if (turns.length < 2) throw new Error('Type at least two turns, one per line, like "Right on Ray Rd" then "Left on Kyrene Rd".');
+  if (turns.length > MAX_TURNS + 1) throw new Error(`That's ${turns.length} turns; a route can take up to ${MAX_TURNS + 1}. Split it in two.`);
+  onStatus(startKind === 'here' ? 'Finding where you are…' : 'Finding the streets…');
+  const start = startKind === 'here' ? await hereNow() : OFFICE;
+  const crossings = await crossingsAround(start, 15000);
+  if (!crossings.length) throw new Error("That start is outside the area the app has streets for (Phoenix to Queen Creek).");
+  // Each turn after the first happens where the previous street meets this one.
+  const problems = [];
+  const points = [];
+  let from = start;
+  for (let i = 1; i < turns.length; i++) {
+    const prev = turns[i - 1];
+    const cur = turns[i];
+    const found = crossings.filter((c) => (sameStreet(prev.key, c.a.key) && sameStreet(cur.key, c.b.key)) || (sameStreet(prev.key, c.b.key) && sameStreet(cur.key, c.a.key)));
+    if (!found.length) {
+      problems.push(`Line ${cur.line}: couldn't find where ${prev.street} meets ${cur.street}. Check both spellings.`);
+      continue;
+    }
+    const near = found.reduce((best, c) => (dist(c.at, from) < dist(best.at, from) ? c : best));
+    if (dist(near.at, from) > 12000) problems.push(`Line ${cur.line}: the nearest place ${prev.street} meets ${cur.street} is ${miles(dist(near.at, from))} mi from the turn before. Check it on the map.`);
+    cur.at = near.at;
+    points.push(cur);
+    from = near.at;
+  }
+  if (!points.length) throw new Error(problems[0]);
+  // The router is aimed 40 m past each turn, already on the new street and heading toward the next
+  // crossing. Aimed at the crossing itself, it may cut through a side road and arrive from the wrong way.
+  const nextAt = (k) => points[k + 1]?.at || start;
+  const vias = points.map((t, k) => offset(t.at, 40, bearing(t.at, nextAt(k))));
+  const route = [start, ...vias, start];
+  const bearings = route.map((p, i) => (i === 0 || i === route.length - 1 ? [] : [bearing(points[i - 1].at, nextAt(i - 1)), 60]));
+  onStatus('Drawing the route…');
+  let data;
+  try {
+    data = await deps.school('/route', { points: route.map((p) => [p.lat, p.lon]), radiuses: route.map((_, i) => (i === 0 || i === route.length - 1 ? 150 : 50)), bearings }, { signal });
+  } catch (err) {
+    const m = /coordinate (\d+)/i.exec(err.message || '');
+    const t = m && points[Number(m[1]) - 1];
+    throw new Error(t ? `Line ${t.line}: the route can't get through ${t.street} there. Check that turn.` : err.message);
+  }
+  const feature = data.features?.[0];
+  if (!feature) throw new Error("The route service didn't send a route back. Try again.");
+  const line = feature.geometry.coordinates.map(([lon, lat]) => ({ lat, lon }));
+  const wp = feature.properties.way_points;
+  // Check each turn against the line drawn: that it goes through the crossing, which way it turns
+  // there, and that it then follows the new street.
+  points.forEach((t, k) => {
+    let corner = wp[k];
+    for (let i = wp[k]; i <= wp[k + 1]; i++) if (dist(line[i], t.at) < dist(line[corner], t.at)) corner = i;
+    if (dist(line[corner], t.at) > 60) {
+      problems.push(`Line ${t.line}: the route doesn't go through where ${turns[turns.indexOf(t) - 1].street} meets ${t.street}. Check that turn on the map.`);
+      return;
+    }
+    const way = turnWay(alongLine(line, corner, 40, -1), line[corner], alongLine(line, corner, 40, 1));
+    if ((t.dir === 'left' || t.dir === 'right') && way !== t.dir) {
+      problems.push(`Line ${t.line} says ${t.dir}, but the route goes ${way === 'straight' ? 'straight on' : way} there. Check the turn or the street before it.`);
+    }
+    const seg = feature.properties.segments[k + 1];
+    const longest = seg?.steps.reduce((a, s) => (s.distance > (a?.distance || 0) ? s : a), null);
+    if (longest && longest.name && longest.name !== '-' && !sameStreet(t.key, streetKey(longest.name))) {
+      problems.push(`After line ${t.line} the route mostly uses ${shortName(longest.name)}, not ${t.street}.`);
+    }
+  });
+  // Up to 9 of the turns go to Google or Apple Maps, spread out, each just past the turn so it's driven the right way.
+  const picks = new Set(points.length <= MAX_STOPS ? points.map((_, k) => k) : Array.from({ length: MAX_STOPS }, (_, n) => Math.round((n * (points.length - 1)) / (MAX_STOPS - 1))));
+  const noted = (t) => [t.text, ...t.notes].join(' · ');
+  const stops = [
+    { kind: 'turn', label: [...startNotes, noted(turns[0])].join(' · '), at: start, drive: [] },
+    ...turns.slice(1).map((t) => {
+      const k = points.indexOf(t);
+      return { kind: 'turn', label: noted(t), at: t.at || start, drive: picks.has(k) ? [line[wp[k + 1]]] : [] };
+    }),
+  ];
+  return {
+    line: line.map((p) => [p.lat, p.lon]), seconds: feature.properties.summary.duration, meters: feature.properties.summary.distance,
+    stops, start, startKind, minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
+  };
+}
+
 // ---------- hand-off to Maps ----------
 
 // Starts from wherever the phone is, through each stop in order, and back to the start.
@@ -461,7 +637,9 @@ async function showMap(route) {
     map.addLayer({ id: 'route-line', type: 'line', source: 'route', layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#f5b400', 'line-width': 4.5 } });
   });
   new ml.Marker({ element: pin('S', ' rt-pin-start') }).setLngLat([route.start.lon, route.start.lat]).addTo(map);
-  route.stops.forEach((s, i) => new ml.Marker({ element: pin(String(i + 1)) }).setLngLat([s.at.lon, s.at.lat]).addTo(map));
+  route.stops.forEach((s, i) => {
+    if (dist(s.at, route.start) > 25) new ml.Marker({ element: pin(String(i + 1)) }).setLngLat([s.at.lon, s.at.lat]).addTo(map);
+  });
 }
 
 export function leaveRoutes() {
@@ -488,11 +666,12 @@ function cleanRoutes(list) {
     if (!r || typeof r.id !== 'string' || typeof r.line !== 'string' || !pt(r.start) || !Array.isArray(r.stops)) return null;
     const stops = r.stops.map((s) => (s && pt(s.at) && Array.isArray(s.drive) ? {
       kind: String(s.kind || ''), label: String(s.label || '').slice(0, 200), at: pt(s.at), drive: s.drive.map(pt).filter(Boolean).slice(0, 3),
-    } : null)).filter(Boolean).slice(0, MAX_STOPS);
+    } : null)).filter(Boolean).slice(0, MAX_TURNS + 1);
     return {
       id: r.id, name: String(r.name || 'Practice route').slice(0, 80), createdAt: num(r.createdAt) || Date.now(), line: r.line,
       start: pt(r.start), startKind: r.startKind === 'here' ? 'here' : 'office', minutes: num(r.minutes) || 60,
       level: LEVELS.some(([v]) => v === r.level) ? r.level : 'building', seconds: num(r.seconds) || 0, meters: num(r.meters) || 0, stops,
+      fromTurns: r.fromTurns === true,
     };
   }).filter(Boolean);
 }
@@ -512,6 +691,83 @@ export async function importRoutes(list) {
 export function forgetRoutes() {
   rs.saved = [];
   rs.route = null;
+  rs.tests = [];
+  rs.testsLoaded = false;
+}
+
+// ---------- test routes (the school's, for road-test days) ----------
+
+async function loadTests() {
+  if (rs.testsLoaded) return;
+  rs.tests = cleanRoutes(await deps.db.getMeta('testRoutes').catch(() => null));
+  rs.testsLoaded = true;
+}
+
+function setTests(list) {
+  rs.tests = cleanRoutes(list);
+  deps.db.setMeta('testRoutes', rs.tests).catch(() => {});
+}
+
+// Asks the school server for the list (at most every 30 s). Says whether anything changed.
+async function refreshTests(force = false) {
+  if (deps.device().status !== 'approved' || (!force && Date.now() - rs.testsFetched < 30000)) return false;
+  rs.testsFetched = Date.now();
+  const before = JSON.stringify(rs.tests.map((t) => [t.id, t.name]));
+  try {
+    setTests((await deps.school('/test-routes')).routes);
+  } catch {
+    return false; // no signal: the copy on the phone still works
+  }
+  return before !== JSON.stringify(rs.tests.map((t) => [t.id, t.name]));
+}
+
+const isAdmin = () => deps.device().status === 'approved' && deps.device().admin;
+const nextTestName = () => `Test route ${String.fromCharCode(65 + (rs.tests.length % 26))}`;
+const routePayload = (r) => ({
+  line: encodeLine(r.line), start: r.start, startKind: r.startKind, minutes: r.minutes, level: r.level, seconds: r.seconds, meters: r.meters, stops: r.stops,
+  fromTurns: !!r.fromTurns,
+});
+
+async function addTest(button) {
+  const route = rs.view?.route;
+  if (!route) return;
+  const name = (document.getElementById('rt-name')?.value || '').trim() || nextTestName();
+  button.disabled = true;
+  try {
+    const res = await deps.school('/test-routes', { name, route: routePayload(route) });
+    setTests(res.routes);
+    rs.naming = null;
+    deps.toast('Added to test routes for every instructor');
+    deps.go(`/routes/test/${res.id}`);
+  } catch (err) {
+    button.disabled = false;
+    deps.toast(err.message);
+  }
+}
+
+async function deleteTest(id) {
+  const test = rs.tests.find((t) => t.id === id);
+  if (!test || !confirm(`Delete "${test.name}" for every instructor?\n\nLinks already sent to students will stop working.`)) return;
+  try {
+    setTests((await deps.school('/test-routes/delete', { id })).routes);
+    deps.toast('Test route deleted');
+    deps.go('/routes', true);
+  } catch (err) {
+    deps.toast(err.message);
+  }
+}
+
+// A link the student opens on their own phone (no app, no sign-in) to practice before test day.
+async function sendToStudent(id) {
+  const test = rs.tests.find((t) => t.id === id);
+  if (!test) return;
+  const url = `${deps.appUrl}#/t/${id}`;
+  const text = `Here's a practice route for your road test: ${test.name}. Open the link, start at the S pin, then tap Google Maps or Apple Maps and drive it with a licensed adult.`;
+  if (navigator.share) {
+    try { await navigator.share({ text, url }); } catch { /* cancelled */ }
+    return;
+  }
+  deps.toast((await deps.copyText(`${text}\n${url}`)) ? 'Link copied. Paste it in a text to the student.' : "Couldn't copy");
 }
 
 // ---------- screens ----------
@@ -519,17 +775,40 @@ export function forgetRoutes() {
 export function parseRoutesPath(parts) {
   if (parts[1] === 'route') return { name: 'routes', view: 'route' };
   if (parts[1] === 'saved' && parts[2]) return { name: 'routes', view: 'saved', id: parts[2] };
+  if (parts[1] === 'test' && parts[2]) return { name: 'routes', view: 'test', id: parts[2] };
+  if (parts[1] === 'turns') return { name: 'routes', view: 'turns' };
   return { name: 'routes', view: 'build' };
 }
 
 export async function renderRoutes(r) {
-  await loadSaved();
-  if (r.view === 'route' && rs.route) return renderRoute(rs.route, false);
+  await Promise.all([loadSaved(), loadTests()]);
+  if (r.view === 'route' && rs.route) return renderRoute(rs.route, 'new');
+  if (r.view === 'turns' && isAdmin()) return renderTurns();
   if (r.view === 'saved') {
     const saved = rs.saved.find((s) => s.id === r.id);
-    if (saved) return renderRoute({ ...saved, line: decodeLine(saved.line) }, true);
+    if (saved) return renderRoute({ ...saved, line: decodeLine(saved.line) }, 'saved');
   }
-  return renderBuilder();
+  if (r.view === 'test') {
+    if (!rs.tests.some((t) => t.id === r.id)) await refreshTests(true);
+    const test = rs.tests.find((t) => t.id === r.id);
+    if (test) return renderRoute({ ...test, line: decodeLine(test.line) }, 'test');
+  }
+  renderBuilder();
+  // Pick up test routes an admin added since, then redraw if still here.
+  if (await refreshTests() && location.hash === '#/routes') renderBuilder();
+}
+
+// What a student sees from a Share route link: the route, the Maps buttons, nothing else of the app.
+export async function renderShared(id) {
+  const shell = (body) => `${deps.header({ title: 'Practice route' })}<main class="view">${body}</main>`;
+  deps.app.innerHTML = shell('<p class="empty-note">Loading the route…</p>');
+  try {
+    const [route] = cleanRoutes([await deps.school(`/shared/${encodeURIComponent(id)}`)]);
+    if (!route) throw new Error("This practice route didn't load right. Ask your instructor for a new link.");
+    if (location.hash === `#/t/${id}`) renderRoute({ ...route, line: decodeLine(route.line) }, 'student');
+  } catch (err) {
+    deps.app.innerHTML = shell(`<div class="card"><h2 class="card-title">Couldn't open this route</h2><p>${esc(err.message)}</p></div>`);
+  }
 }
 
 function chips(action, options, isOn, extra = '') {
@@ -541,13 +820,20 @@ function renderBuilder() {
   const approved = deps.device().status === 'approved';
   const busy = rs.building;
   const skills = SKILLS.map(([id, label]) => [id, label, rs.level === 'beginner' && id === 'fw']);
-  const saved = rs.saved.map((s) => `<button type="button" class="card rt-saved" data-action="rt-open" data-id="${esc(s.id)}">
+  const card = (s, action) => `<button type="button" class="card rt-saved" data-action="${action}" data-id="${esc(s.id)}">
       <span class="rt-saved-name">${esc(s.name)}</span>
       <span class="rt-saved-meta">${esc(minutesLabel(Math.round(s.seconds / 60)))} · ${esc(miles(s.meters))} mi · ${s.stops.length} stops · ${s.startKind === 'here' ? 'Started from a spot you picked' : 'From the office'}</span>
-    </button>`).join('');
+    </button>`;
+  const saved = rs.saved.map((s) => card(s, 'rt-open')).join('');
+  // Test routes come first: on a test day they're what you reach for.
+  const tests = (rs.tests.length
+    ? `<div class="list">${rs.tests.map((t) => card(t, 'rt-open-test')).join('')}</div>`
+    : `<p class="hint rt-none">${isAdmin() ? 'None yet. Type in a test route\'s turns, or build a route and tap Add to test routes under it.' : 'None yet. Your admin adds them.'}</p>`)
+    + (isAdmin() ? '<button class="btn btn-outline btn-block rt-gap" data-action="rt-turns">Make one from turns</button>' : '');
   deps.app.innerHTML = `
     ${deps.header({ title: 'Routes' })}
     <main class="view with-tabs routes-view">
+      ${approved || rs.tests.length ? `<h2 class="list-title rt-first">Test routes</h2>${tests}<h2 class="list-title">Build a route</h2>` : ''}
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
           ${chips('rt-start', [['office', 'Office'], ['here', 'Here (GPS)']], (v) => v === rs.start)}
@@ -568,57 +854,147 @@ function renderBuilder() {
     ${deps.tabbar('routes')}`;
 }
 
-function renderRoute(route, isSaved) {
+// mode: new (just built), saved (on this phone), test (the school's), student (opened from a link).
+function renderRoute(route, mode) {
+  rs.view = { route, mode };
+  const student = mode === 'student';
   const ios = deps.platform() !== 'android';
-  const total = `${minutesLabel(Math.round(route.seconds / 60))} · ${miles(route.meters)} mi · ${route.stops.length} stops`;
+  const title = { new: 'Practice route', saved: 'Saved route', test: 'Test route', student: 'Practice route' }[mode];
+  const total = `${minutesLabel(Math.round(route.seconds / 60))} · ${miles(route.meters)} mi · ${route.stops.length} ${route.fromTurns ? 'turns' : 'stops'}`;
   const from = route.startKind === 'here' ? 'From where you were' : 'From the office';
+  const about = student
+    ? `${route.startKind === 'office' ? 'Start at Key Skills Driving School, 6909 W Ray Rd, Chandler (the S pin)' : 'Start at the S pin'}, then tap ${ios ? 'Google Maps or Apple Maps' : 'Google Maps'}.`
+    : route.fromTurns ? `${from} · made from a list of turns` : `${from} · ${lengthLabel(route.minutes)} lesson · ${levelLabel(route.level)}`;
   const missing = route.missing?.length ? `<p class="hint">Nothing near enough for: ${esc(route.missing.map((k) => SKILLS.find(([id]) => id === k)?.[1]).join(', '))}.</p>` : '';
+  // A typed-in route says plainly where it doesn't match the turns, before anyone saves it.
+  const problems = route.problems?.length
+    ? `<div class="banner banner-gold rt-problems"><div><strong>Check ${route.problems.length === 1 ? 'this' : `these ${route.problems.length}`} before saving:</strong><ul>${route.problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div></div>`
+    : '';
+  // The Maps apps take 9 points; on a longer typed-in route the list is the full set of turns.
+  const handoff = route.fromTurns && route.stops.length > MAX_STOPS && !student
+    ? `<p class="hint">Google and Apple Maps get 9 of the ${route.stops.length} turns, spread along the route. The list below has every turn.</p>` : '';
+  const fine = student
+    ? 'Practice with a licensed adult in the front seat. Road signs and signals come first: the map can be out of date.'
+    : 'Spots come from OpenStreetMap and can be out of date. Drive a route yourself before using it with a student.';
   deps.app.innerHTML = `
-    ${deps.header({ left: deps.backLink('/routes', 'Routes'), title: isSaved ? 'Saved route' : 'Practice route' })}
-    <main class="view with-tabs routes-view">
+    ${deps.header(student ? { title } : { left: deps.backLink('/routes', 'Routes'), title })}
+    <main class="view${student ? '' : ' with-tabs'} routes-view">
       <div id="rt-map" class="rt-map" role="img" aria-label="Map of the route"></div>
       <div class="rt-summary">
-        ${isSaved ? `<p class="rt-route-name">${esc(route.name)}</p>` : ''}
+        ${mode !== 'new' ? `<p class="rt-route-name">${esc(route.name)}</p>` : ''}
         <p class="rt-total">${esc(total)}</p>
-        <p class="hint">${esc(from)} · ${esc(lengthLabel(route.minutes))} lesson · ${esc(levelLabel(route.level))}</p>
+        <p class="hint">${esc(about)}</p>
         ${missing}
       </div>
+      ${problems}
       <span class="label">Drive it</span>
       <div class="${ios ? 'two' : ''} rt-drive">
         <a class="btn btn-primary${ios ? '' : ' btn-block'}" href="${esc(googleLink(route))}" target="_blank" rel="noopener">Google Maps</a>
         ${ios ? `<a class="btn btn-primary" href="${esc(appleLink(route))}" target="_blank" rel="noopener">Apple Maps</a>` : ''}
       </div>
-      <div id="rt-actions">${routeButtons(route, isSaved)}</div>
-      <h2 class="list-title">Stops</h2>
+      ${handoff}
+      <div id="rt-actions">${routeButtons(route, mode)}</div>
+      <h2 class="list-title">${route.fromTurns ? 'Turns' : 'Stops'}</h2>
       <ol class="rt-stops">
         ${route.stops.map((s) => `<li>${esc(s.label)}</li>`).join('')}
         <li class="rt-back">Back to the start</li>
       </ol>
-      <p class="fine">Spots come from OpenStreetMap and can be out of date. Drive a route yourself before using it with a student.</p>
+      <p class="fine">${esc(fine)}</p>
     </main>
-    ${deps.tabbar('routes')}`;
+    ${student ? '' : deps.tabbar('routes')}`;
   showMap(route);
 }
 
-// Shuffle and Save, or the name box while saving. Redrawn on its own so the map stays put.
-function routeButtons(route, isSaved) {
-  if (isSaved) return `<button class="btn btn-block rt-gap" data-action="rt-delete" data-id="${esc(route.id)}">Delete</button>`;
-  if (rs.building) return `<button class="btn btn-block rt-gap" data-action="rt-cancel"><span class="spinner"></span><span>${esc(rs.building.status)}</span></button>`;
+// The buttons under Drive it, or the name box while saving. Redrawn on their own so the map stays put.
+function routeButtons(route, mode) {
+  if (mode === 'student') return '';
   if (rs.naming) {
+    const test = rs.naming === 'test';
     return `<div class="rt-name">
-        <label class="field"><span class="label">Name</span><input id="rt-name" maxlength="80" value="${esc(defaultName(route))}" autocomplete="off"></label>
-        <div class="two"><button class="btn" data-action="rt-save-cancel">Cancel</button><button class="btn btn-primary" data-action="rt-save-confirm">Save</button></div>
+        <label class="field"><span class="label">${test ? 'Test route name (every instructor sees it)' : 'Name'}</span><input id="rt-name" maxlength="80" value="${esc(test ? nextTestName() : defaultName(route))}" autocomplete="off"></label>
+        <div class="two"><button class="btn" data-action="rt-save-cancel">Cancel</button><button class="btn btn-primary" data-action="rt-save-confirm">${test ? 'Add' : 'Save'}</button></div>
       </div>`;
   }
-  return '<div class="two rt-gap"><button class="btn" data-action="rt-shuffle">Shuffle</button><button class="btn" data-action="rt-save">Save</button></div>';
+  if (mode === 'test') {
+    return `<button class="btn btn-block rt-gap" data-action="rt-send" data-id="${esc(route.id)}">Share route</button>
+      ${isAdmin() ? `<button class="btn btn-block btn-danger-soft rt-gap" data-action="rt-test-delete" data-id="${esc(route.id)}">Delete test route</button>` : ''}`;
+  }
+  const toTests = isAdmin() ? '<button class="btn btn-block rt-gap" data-action="rt-test-add">Add to test routes</button>' : '';
+  if (mode === 'saved') return `${toTests}<button class="btn btn-block rt-gap" data-action="rt-delete" data-id="${esc(route.id)}">Delete</button>`;
+  if (rs.building) return `<button class="btn btn-block rt-gap" data-action="rt-cancel"><span class="spinner"></span><span>${esc(rs.building.status)}</span></button>`;
+  // A typed-in route can't be shuffled; going back to fix a line is what it needs instead.
+  const first = route.fromTurns ? '<button class="btn" data-action="rt-turns">Edit turns</button>' : '<button class="btn" data-action="rt-shuffle">Shuffle</button>';
+  return `<div class="two rt-gap">${first}<button class="btn" data-action="rt-save">Save</button></div>${toTests}`;
+}
+
+// Admins type or paste a test route as turns; the app finds the crossings and draws it.
+function renderTurns() {
+  leaveRoutes();
+  const busy = rs.building;
+  deps.app.innerHTML = `
+    ${deps.header({ left: deps.backLink('/routes', 'Routes'), title: 'Route from turns' })}
+    <main class="view with-tabs routes-view">
+      <section class="card rt-form">
+        <div class="rt-row"><span class="label">Start</span>
+          ${chips('rt-turns-start', [['office', 'Office'], ['here', 'Here (GPS)']], (v) => v === rs.turnsStart)}
+        </div>
+        <label class="field rt-row"><span class="label">Turns, one per line</span>
+          <textarea id="rt-turns" rows="10" placeholder="Right on Ray Rd&#10;Left on Kyrene Rd&#10;Left on Warner Rd&#10;Parallel park on the right&#10;Left on 56th St&#10;Left on Ray Rd" autocapitalize="sentences">${esc(rs.turnsText)}</textarea></label>
+        <p class="hint">Start with the street you pull out onto. Each turn happens where the street before it meets the new one. A line without a street (like "Parallel park on the right") is kept as a note on the turn before it. The route ends back at the start.</p>
+        <button class="btn btn-primary btn-block btn-tall" data-action="${busy ? 'rt-cancel' : 'rt-turns-build'}">
+          ${busy ? `<span class="spinner"></span><span>${esc(busy.status)}</span>` : 'Build from turns'}
+        </button>
+      </section>
+    </main>
+    ${deps.tabbar('routes')}`;
+  const box = document.getElementById('rt-turns');
+  if (box) {
+    box.style.height = 'auto';
+    box.style.height = `${box.scrollHeight + 2}px`;
+  }
+}
+
+async function buildTurns() {
+  if (rs.building) return;
+  rs.turnsText = document.getElementById('rt-turns')?.value || rs.turnsText;
+  const controller = new AbortController();
+  rs.building = { status: 'Reading the turns…', controller };
+  rs.naming = null;
+  renderTurns();
+  try {
+    const route = await buildFromTurns(rs.turnsText, rs.turnsStart, controller.signal, setStatus);
+    if (controller.signal.aborted) return;
+    rs.route = route;
+    rs.building = null;
+    if (location.hash.startsWith('#/routes')) deps.go('/routes/route');
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    rs.building = null;
+    if (location.hash === '#/routes/turns') renderTurns();
+    deps.toast(err.message || "Couldn't build that route", { label: 'OK', run: () => {} });
+  }
+}
+
+// The app's input listener hands typing in the turns box here, so a re-render keeps it.
+export function routesInput(el) {
+  if (el.id === 'rt-turns') rs.turnsText = el.value;
 }
 
 function redrawButtons() {
   const box = document.getElementById('rt-actions');
-  if (box && rs.route) box.innerHTML = routeButtons(rs.route, false);
+  if (box && rs.view) box.innerHTML = routeButtons(rs.view.route, rs.view.mode);
+}
+
+function openNameBox(kind) {
+  rs.naming = kind;
+  redrawButtons();
+  const input = document.getElementById('rt-name');
+  input?.focus();
+  input?.select();
 }
 
 function defaultName(route) {
+  if (route.fromTurns) return `Turns from ${route.startKind === 'here' ? 'here' : 'the office'}, ${minutesLabel(Math.round(route.seconds / 60))}`;
   const kinds = [...new Set(route.stops.map((s) => s.kind))].map((k) => SKILLS.find(([id]) => id === k)?.[1]).filter(Boolean);
   return `${route.startKind === 'here' ? 'Here' : 'Office'}, ${lengthLabel(route.minutes)}: ${kinds.slice(0, 3).join(', ')}`.slice(0, 80);
 }
@@ -653,13 +1029,13 @@ function setStatus(text) {
 async function build({ stay = false } = {}) {
   if (rs.building) return;
   if (!rs.skills.size) {
-    deps.toast('Pick at least one thing to practise');
+    deps.toast('Pick at least one thing to practice');
     return;
   }
   const seed = (Math.random() * 2 ** 32) >>> 0;
   const controller = new AbortController();
   rs.building = { status: rs.start === 'here' ? 'Finding where you are…' : 'Finding practice spots…', controller };
-  rs.naming = false;
+  rs.naming = null;
   const redraw = () => (stay && document.getElementById('rt-actions') ? redrawButtons() : renderBuilder());
   if (stay || location.hash === '#/routes') redraw();
   else deps.go('/routes');
@@ -684,6 +1060,7 @@ function cancelBuild() {
   rs.building?.controller.abort();
   rs.building = null;
   if (document.getElementById('rt-actions')) redrawButtons();
+  else if (location.hash === '#/routes/turns') renderTurns();
   else renderBuilder();
   deps.toast('Stopped');
 }
@@ -695,7 +1072,7 @@ async function saveRoute() {
   const saved = {
     id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`,
     name, createdAt: Date.now(), line: encodeLine(route.line), start: route.start, startKind: route.startKind,
-    minutes: route.minutes, level: route.level, seconds: route.seconds, meters: route.meters, stops: route.stops,
+    minutes: route.minutes, level: route.level, seconds: route.seconds, meters: route.meters, stops: route.stops, fromTurns: !!route.fromTurns,
   };
   rs.saved = [saved, ...rs.saved];
   try {
@@ -705,7 +1082,7 @@ async function saveRoute() {
     deps.toast("Couldn't save the route. Try again.");
     return;
   }
-  rs.naming = false;
+  rs.naming = null;
   deps.toast('Route saved');
   deps.go(`/routes/saved/${saved.id}`, true);
 }
@@ -742,15 +1119,16 @@ export const routeActions = {
     rs.level = rs.route.level;
     build({ stay: true });
   },
-  'rt-save': () => {
-    rs.naming = true;
-    redrawButtons();
-    const input = document.getElementById('rt-name');
-    input?.focus();
-    input?.select();
-  },
-  'rt-save-cancel': () => { rs.naming = false; redrawButtons(); },
-  'rt-save-confirm': () => saveRoute(),
+  'rt-save': () => openNameBox('save'),
+  'rt-test-add': () => openNameBox('test'),
+  'rt-save-cancel': () => { rs.naming = null; redrawButtons(); },
+  'rt-save-confirm': (el) => (rs.naming === 'test' ? addTest(el) : saveRoute()),
   'rt-open': (el) => deps.go(`/routes/saved/${el.dataset.id}`),
   'rt-delete': (el) => deleteRoute(el.dataset.id),
+  'rt-open-test': (el) => deps.go(`/routes/test/${el.dataset.id}`),
+  'rt-test-delete': (el) => deleteTest(el.dataset.id),
+  'rt-send': (el) => sendToStudent(el.dataset.id),
+  'rt-turns': () => { rs.naming = null; deps.go('/routes/turns'); },
+  'rt-turns-start': (el) => { rs.turnsStart = el.dataset.value; renderTurns(); },
+  'rt-turns-build': () => buildTurns(),
 };

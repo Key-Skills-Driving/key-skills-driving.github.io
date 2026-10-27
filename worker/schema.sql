@@ -19,3 +19,13 @@ CREATE TABLE IF NOT EXISTS settings (
   name TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Practice routes the school uses for road-test days, added by admins from the Routes tab. The id is
+-- random and is also the student link (#/t/<id>), so anyone with the link can see that one route.
+CREATE TABLE IF NOT EXISTS test_routes (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL, -- JSON: start, stops, line (encoded polyline), seconds, meters, minutes, level
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL
+);
