@@ -1,6 +1,6 @@
 // Keeps the app working with no signal. Bump CACHE (and VERSION in app.js) on every release
 // so phones pick up the new files.
-const CACHE = 'lesson-notes-3.11.1';
+const CACHE = 'lesson-notes-3.12.0';
 const ASSETS = [
   './',
   'index.html',
@@ -56,7 +56,7 @@ self.addEventListener('push', (event) => {
   } catch {
     data = { body: event.data ? event.data.text() : '' };
   }
-  event.waitUntil(self.registration.showNotification(data.title || 'KSDS Lessons', {
+  event.waitUntil(self.registration.showNotification(data.title || 'KS Glovebox', {
     body: data.body || 'Someone asked to join.',
     icon: 'icons/icon-192.png',
     badge: 'icons/icon-192.png',

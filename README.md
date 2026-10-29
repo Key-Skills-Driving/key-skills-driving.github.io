@@ -1,6 +1,6 @@
-# KSDS Lesson Breakdown
+# KS Glovebox
 
-A home-screen app for driving instructors at Key Skills Driving School. Talk through what happened in a lesson and get a professional lesson breakdown (a bare "Covered today" list, then a personal message in the instructor's voice about how it went, then "Focus for next lesson", with no title or date line) that's one tap to copy and send.
+A home-screen app for driving instructors at Key Skills Driving School (called KSDS Lesson Breakdown until v3.12): lesson breakdowns, the review card, practice routes and test routes. Talk through what happened in a lesson and get a professional lesson breakdown (a bare "Covered today" list, then a personal message in the instructor's voice about how it went, then "Focus for next lesson", with no title or date line) that's one tap to copy and send.
 
 - **Break down:** dictate with the iPhone keyboard mic, then tap **Break it down**. With a free Google Gemini key (Settings) it's written right in the app at no cost: Gemini 3.8 Flash on the free tier, falling back to other free Gemini models when one's daily allowance runs out. An OpenAI or Anthropic (Claude) key works too but is paid; Claude runs `claude-opus-5` with adaptive thinking at low effort and server-side fallbacks, dropping either if the chosen model rejects them. Without a key, it copies a ready-made prompt to paste into the ChatGPT or Claude app.
 - **Saved:** only the breakdowns you choose to save (tap **Save** under one), plus prewritten ones you add. Tap any of them to copy it.

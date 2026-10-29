@@ -374,7 +374,7 @@ mark { padding: 0 1px; border-radius: 3px; background: var(--gold-soft); color: 
 .demo-home i { display: block; min-width: 0; aspect-ratio: 1; border-radius: 6px; background: rgba(255, 255, 255, 0.85); }
 .demo-icon { display: grid; min-width: 0; justify-items: center; gap: 2px; transform: scale(0); animation: demoPop var(--cycle) infinite; }
 .demo-icon img { display: block; width: 100%; max-width: 100%; aspect-ratio: 1; border-radius: 6px; }
-.demo-icon b { max-width: 100%; overflow: hidden; font-size: 5px; color: #fff; white-space: nowrap; text-overflow: ellipsis; }
+.demo-icon b { margin-inline: -4px; font-size: 5px; color: #fff; white-space: nowrap; } /* may reach 4px past the icon, like a real label; the column gap has room */
 .demo-tap {
   position: absolute;
   width: 22px;

@@ -1,4 +1,4 @@
-// KSDS Lessons school server (Cloudflare Worker).
+// KS Glovebox school server (Cloudflare Worker).
 //
 // Holds the school's Gemini key and a list of phones the admin has approved, so staff can use
 // Break it down without a key of their own. It only writes lesson breakdowns (the prompt is built
@@ -34,7 +34,7 @@ export default {
       });
     }
     try {
-      if (!APP_ORIGINS.has(origin)) throw new Refusal(403, 'This server only works from the KSDS Lessons app.');
+      if (!APP_ORIGINS.has(origin)) throw new Refusal(403, 'This server only works from the KS Glovebox app.');
       const body = await handle(request, env, ctx);
       if (body instanceof Response) { // a route, passed straight through so the server never has to parse it
         Object.entries(cors).forEach(([k, v]) => body.headers.set(k, v));
@@ -171,7 +171,7 @@ async function notifyAdmins(env, name) {
   const { results } = await env.DB.prepare("SELECT id, push FROM phones WHERE admin = 1 AND status = 'approved' AND push IS NOT NULL").all();
   const vapid = { subject: env.VAPID_SUBJECT || 'https://key-skills-driving.github.io/', publicKey: env.VAPID_PUBLIC_KEY, privateKey: env.VAPID_PRIVATE_KEY };
   const message = {
-    data: JSON.stringify({ title: 'KSDS Lessons', body: `${name} asked to join. Tap to approve.`, url: './#/phones', tag: 'join-request' }),
+    data: JSON.stringify({ title: 'KS Glovebox', body: `${name} asked to join. Tap to approve.`, url: './#/phones', tag: 'join-request' }),
     options: { ttl: 86400 },
   };
   await Promise.all(results.map(async (row) => {

@@ -1,8 +1,8 @@
 {
   "id": "./",
-  "name": "KSDS Lesson Breakdown",
-  "short_name": "KSDS Lessons",
-  "description": "Talk through a driving lesson and get a professional breakdown to copy and send.",
+  "name": "KS Glovebox",
+  "short_name": "KS Glovebox",
+  "description": "The Key Skills Driving School instructor app: lesson breakdowns, the review card, practice routes and test routes.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

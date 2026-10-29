@@ -10,7 +10,7 @@ import {
 } from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.11.1';
+const VERSION = '3.12.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -437,7 +437,7 @@ function installDemo(kind) {
         <div class="demo-row">${android ? 'Desktop site' : 'Print'}</div>
       </div>
       <div class="demo-add"><span>Cancel</span><b>${row}</b><span class="hit">${last}</span></div>
-      <div class="demo-home"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><span class="demo-icon"><img src="icons/icon-192.png" alt=""><b>KSDS</b></span></div>
+      <div class="demo-home"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><span class="demo-icon"><img src="icons/icon-192.png" alt=""><b>KS Glovebox</b></span></div>
       <div class="demo-bar"><span class="demo-trigger">${trigger}</span></div>
       <div class="demo-tap"></div>
     </div></div>
@@ -452,7 +452,7 @@ function installScreen() {
   if (state.justInstalled) {
     body = `${icon}
       <h2>Installed</h2>
-      <p>From now on, open <strong>KSDS Lessons</strong> from the icon on your Home Screen.</p>
+      <p>From now on, open <strong>KS Glovebox</strong> from the icon on your Home Screen.</p>
       <button class="btn btn-block" data-action="dismiss-install">Keep going here for now</button>`;
   } else if (ios) {
     body = `${icon}
@@ -462,7 +462,7 @@ function installScreen() {
       <ol class="install-steps">
         <li><span class="num">1</span><div><strong>Tap Share</strong>, the square with an arrow.<span class="fine">${shareHint()}</span></div><span class="key">${SHARE_GLYPH}</span></li>
         <li><span class="num">2</span><div><strong>Tap Add to Home Screen.</strong><span class="fine">It's in the list. Scroll up a little if you don't see it.</span></div><span class="key">${PLUS_GLYPH}</span></li>
-        <li><span class="num">3</span><div><strong>Tap Add</strong>, top right. Then open the new <strong>KSDS Lessons</strong> icon.</div></li>
+        <li><span class="num">3</span><div><strong>Tap Add</strong>, top right. Then open the new <strong>KS Glovebox</strong> icon.</div></li>
       </ol>
       <button class="link-btn" data-action="dismiss-install">Not now, keep using it in the browser</button>
       <p class="fine center">Anything you set up here in the browser stays in the browser and won't carry over.</p>`;
@@ -484,7 +484,7 @@ function installScreen() {
       <p class="fine">Don't see either? Tap the menu and choose <strong>Open in Chrome</strong> first, then try again.</p>
       <button class="link-btn" data-action="dismiss-install">Not now</button>`;
   }
-  return `${header({ title: 'KSDS Lessons' })}
+  return `${header({ title: 'KS Glovebox' })}
     <main class="view install"><section class="card install-card">${body}</section></main>`;
 }
 
@@ -1360,7 +1360,7 @@ function renderSettings() {
       ${settingsSection('backup', 'Backup', backup)}
       ${settingsSection('keys', 'Use your own AI key', keys, keyBadge)}
       ${settingsSection('privacy', 'Privacy & security', privacy)}
-      <p class="fine center version">KSDS Lesson Breakdown ${VERSION} · <button type="button" class="link-btn" data-action="reload-app">Reload</button></p>
+      <p class="fine center version">KS Glovebox ${VERSION} · <button type="button" class="link-btn" data-action="reload-app">Reload</button></p>
       <p class="fine center">Or pull down from the top of any screen, like in Safari.</p>
     </main>`;
   $$('details[open] textarea', app).forEach(autosize);
@@ -1388,7 +1388,7 @@ function schoolSection() {
 
 // Opens Messages with the request typed out; the instructor picks who to send it to.
 function adminTextLink(name) {
-  const body = encodeURIComponent(`I asked to join KSDS Lessons as ${name}. Can you approve my phone?`);
+  const body = encodeURIComponent(`I asked to join KS Glovebox as ${name}. Can you approve my phone?`);
   return platform() === 'ios' ? `sms:&body=${body}` : `sms:?body=${body}`;
 }
 
@@ -1399,7 +1399,7 @@ const pushSupported = () => 'PushManager' in window && 'Notification' in window 
 function pushControls() {
   if (!pushSupported()) return '<p class="fine">This phone can\'t show notifications from the app.</p>';
   if (!isInstalled()) return '<p class="fine">To get a notification when someone asks to join, use the app from your Home Screen. Notifications don\'t work in a browser tab.</p>';
-  if (Notification.permission === 'denied') return '<p class="fine">Notifications are blocked for this app. Turn them on in your phone\'s Settings › Notifications › KSDS Lessons, then come back here.</p>';
+  if (Notification.permission === 'denied') return '<p class="fine">Notifications are blocked for this app. Turn them on in your phone\'s Settings › Notifications › KS Glovebox (KSDS Lessons if you added it before the new name), then come back here.</p>';
   return state.device.push
     ? '<p class="ok-line">You\'ll get a notification when someone asks to join.</p><button class="btn btn-block" data-action="push-off">Turn notifications off</button>'
     : '<button class="btn btn-block" data-action="push-on">Notify me when someone asks to join</button>';
@@ -1630,7 +1630,7 @@ async function pasteGeminiKey(button) {
 // No key in the invite any more: new people ask to join and an admin approves their phone.
 async function inviteCoworker() {
   const text = [
-    "Here's the KSDS lesson breakdown app:",
+    "Here's KS Glovebox, our instructor app:",
     APP_URL,
     '',
     '1. Open the link in Safari.',
@@ -1744,7 +1744,7 @@ function wipeWarning() {
   const lines = [
     'Wipe App?',
     '',
-    'This deletes, from KSDS Lessons only:',
+    'This deletes, from KS Glovebox only:',
     '• All saved and prewritten breakdowns',
     '• Saved practice routes',
     '• Your AI key',
