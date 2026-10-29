@@ -1,5 +1,8 @@
 # KSDS Lessons school server. Deploy from this folder with: npx wrangler deploy
 name = "ksds-lessons"
+# The KSDS Cloudflare account (eliwest24@gmail.com). Pinned since the PC also has a login for the
+# Eli FM radio account: a deploy under the wrong login now fails instead of landing there.
+account_id = "e1b368ceee22757c297d5ecfffbe4747"
 main = "src/index.js"
 compatibility_date = "2025-09-01"
 workers_dev = true
