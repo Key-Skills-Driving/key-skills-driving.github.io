@@ -1,11 +1,15 @@
 // Routes tab: a practice-route maker. Pick a start (the office, or Here from the phone's GPS), a length,
 // the student's level and the skills to practice; it builds a loop that leaves from the start, passes
-// real spots for those skills and comes back, sized to the time. Drive it hands the loop to Google Maps
-// or Apple Maps for voice directions. Everything is set up before the car moves.
+// real spots for those skills and comes back, sized to the time. Start driving opens Drive mode
+// (drive.js) for voice directions in the app; Google Maps and Apple Maps links are there too.
+// Everything is set up before the car moves.
 //
 // The spots come from OpenStreetMap, prepared ahead of time by tools/route-spots into docs/route-spots/
 // (one small file per area, cached by the service worker), so a build only waits on the road route.
 // That comes from OpenRouteService through the school server, which holds the key.
+
+import { dist, bearing, offset, turnAngle, shortName } from './geo.js';
+import { makeGuide, cleanGuide, startDrive, driveActions } from './drive.js';
 
 // 6909 W Ray Rd, Chandler. Test-ready loops lean toward here, where road tests happen.
 const OFFICE = { lat: 33.31922, lon: -111.96155 };
@@ -29,7 +33,7 @@ const TOLERANCE_MIN = 5; // a route counts as fitting the lesson within this man
 const MAX_TRIES = 4; // route requests per build; the school's free key allows 200 a day for everyone
 const SNAP_M = 35; // a spot counts as passed when the route goes within this many meters of it
 
-let deps; // what app.js shares: app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device, appUrl
+let deps; // what app.js shares: app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device, appUrl, keepAwake
 const rs = {
   start: 'office',
   minutes: 60,
@@ -55,20 +59,6 @@ export function setupRoutes(shared) {
 // ---------- small helpers ----------
 
 const esc = (v) => deps.esc(v);
-const rad = (d) => (d * Math.PI) / 180;
-
-function dist(a, b) {
-  const kx = 111320 * Math.cos(rad((a.lat + b.lat) / 2));
-  return Math.hypot((a.lat - b.lat) * 111320, (a.lon - b.lon) * kx);
-}
-
-function bearing(a, b) {
-  return ((Math.atan2((b.lon - a.lon) * Math.cos(rad(a.lat)), b.lat - a.lat) * 180) / Math.PI + 360) % 360;
-}
-
-function offset(p, meters, deg) {
-  return { lat: p.lat + (meters * Math.cos(rad(deg))) / 111320, lon: p.lon + (meters * Math.sin(rad(deg))) / (111320 * Math.cos(rad(p.lat))) };
-}
 
 // Same seed, same route, so Shuffle is the only thing that changes it.
 function seeded(seed) {
@@ -149,16 +139,6 @@ async function getJson(url) {
 const cellKey = (lat, lon) => `${(Math.floor(lat * 10 + 1e-9) / 10).toFixed(2)}_${(Math.floor(lon * 10 + 1e-9) / 10).toFixed(2)}`;
 
 const turnLabel = (what, from, to) => `${what}${from && to ? `: ${from} onto ${to}` : to ? ` onto ${to}` : from ? ` from ${from}` : ''}`;
-
-// The route service's names are long ("East Chandler Boulevard"); say them the way the spots do.
-const SUFFIX = { Street: 'St', Road: 'Rd', Avenue: 'Ave', Boulevard: 'Blvd', Drive: 'Dr', Parkway: 'Pkwy', Lane: 'Ln', Place: 'Pl', Court: 'Ct', Circle: 'Cir', Trail: 'Trl' };
-function shortName(name) {
-  if (!name || name === '-') return '';
-  const words = name.split(' ');
-  if (words.length > 1 && /^(North|South|East|West|[NSEW])$/.test(words[0])) words.shift();
-  if (words.length > 1 && SUFFIX[words.at(-1)]) words[words.length - 1] = SUFFIX[words.at(-1)];
-  return words.join(' ');
-}
 
 // Turns the compact arrays from tools/route-spots into stops with labels, the points the route must go
 // through (via), and the points handed to Google or Apple Maps (drive).
@@ -332,6 +312,7 @@ function stopsFromRoute(stops, feature) {
     seconds: feature.properties.summary.duration,
     meters: feature.properties.summary.distance,
     stops: stops.map((s) => ({ kind: s.kind, label: s.label, at: s.at, drive: s.drive })),
+    guide: makeGuide(feature), // the turn-by-turn directions Drive mode reads out
   };
 }
 
@@ -463,7 +444,6 @@ function turnWay(before, at, after) {
   const angle = turnAngle(bearing(before, at), bearing(at, after));
   return angle < -35 ? 'left' : angle > 35 ? 'right' : 'straight';
 }
-const turnAngle = (hIn, hOut) => ((hOut - hIn + 540) % 360) - 180;
 
 // The point `meters` along the route line from index i, forward (+1) or back (-1).
 function alongLine(line, i, meters, step) {
@@ -554,6 +534,7 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
   return {
     line: line.map((p) => [p.lat, p.lon]), seconds: feature.properties.summary.duration, meters: feature.properties.summary.distance,
     stops, start, startKind, minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
+    guide: makeGuide(feature),
   };
 }
 
@@ -681,7 +662,7 @@ function cleanRoutes(list) {
       id: r.id, name: String(r.name || 'Practice route').slice(0, 80), createdAt: num(r.createdAt) || Date.now(), line: r.line,
       start: pt(r.start), startKind: r.startKind === 'here' ? 'here' : 'office', minutes: num(r.minutes) || 60,
       level: LEVELS.some(([v]) => v === r.level) ? r.level : 'building', seconds: num(r.seconds) || 0, meters: num(r.meters) || 0, stops,
-      fromTurns: r.fromTurns === true,
+      fromTurns: r.fromTurns === true, guide: cleanGuide(r.guide),
     };
   }).filter(Boolean);
 }
@@ -735,7 +716,7 @@ const isAdmin = () => deps.device().status === 'approved' && deps.device().admin
 const nextTestName = () => `Test route ${String.fromCharCode(65 + (rs.tests.length % 26))}`;
 const routePayload = (r) => ({
   line: encodeLine(r.line), start: r.start, startKind: r.startKind, minutes: r.minutes, level: r.level, seconds: r.seconds, meters: r.meters, stops: r.stops,
-  fromTurns: !!r.fromTurns,
+  fromTurns: !!r.fromTurns, guide: r.guide || null,
 });
 
 async function addTest(button) {
@@ -874,16 +855,16 @@ function renderRoute(route, mode) {
   const total = `${minutesLabel(Math.round(route.seconds / 60))} · ${miles(route.meters)} mi · ${route.stops.length} ${route.fromTurns ? 'turns' : 'stops'}`;
   const from = route.startKind === 'here' ? 'From where you were' : 'From the office';
   const about = student
-    ? `Tap ${ios ? 'Google Maps or Apple Maps' : 'Google Maps'} from anywhere, even home: it takes you to the start first (${route.startKind === 'office' ? 'Key Skills Driving School, 6909 W Ray Rd, Chandler, ' : ''}the S pin), then around the route.`
+    ? `Tap Start driving for voice directions, turn by turn. From home it points you to the start first (${route.startKind === 'office' ? 'Key Skills Driving School, 6909 W Ray Rd, Chandler, ' : ''}the S pin).`
     : route.fromTurns ? `${from} · made from a list of turns` : `${from} · ${lengthLabel(route.minutes)} lesson · ${levelLabel(route.level)}`;
   const missing = route.missing?.length ? `<p class="hint">Nothing near enough for: ${esc(route.missing.map((k) => SKILLS.find(([id]) => id === k)?.[1]).join(', '))}.</p>` : '';
   // A typed-in route says plainly where it doesn't match the turns, before anyone saves it.
   const problems = route.problems?.length
     ? `<div class="banner banner-gold rt-problems"><div><strong>Check ${route.problems.length === 1 ? 'this' : `these ${route.problems.length}`} before saving:</strong><ul>${route.problems.map((p) => `<li>${esc(p)}</li>`).join('')}</ul></div></div>`
     : '';
-  // The Maps apps take 9 points; on a longer typed-in route the list is the full set of turns.
-  const handoff = route.fromTurns && route.stops.length > MAX_STOPS && !student
-    ? `<p class="hint">Google and Apple Maps get ${viaStart ? MAX_STOPS - 1 : MAX_STOPS} of the ${route.stops.length} turns, spread along the route. The list below has every turn.</p>` : '';
+  // The Maps apps take 9 points and stop at each one; on a longer typed-in route they only get some of the turns.
+  const handoff = `<p class="hint">Google and Apple Maps stop at each point and ask before going on.${route.fromTurns && route.stops.length > MAX_STOPS
+    ? ` They get ${viaStart ? MAX_STOPS - 1 : MAX_STOPS} of the ${route.stops.length} turns, spread along the route.` : ''}</p>`;
   const fine = student
     ? 'Practice with a licensed adult in the front seat. Road signs and signals come first: the map can be out of date.'
     : 'Spots come from OpenStreetMap and can be out of date. Drive a route yourself before using it with a student.';
@@ -899,9 +880,11 @@ function renderRoute(route, mode) {
       </div>
       ${problems}
       <span class="label">Drive it</span>
-      <div class="${ios ? 'two' : ''} rt-drive">
-        <a class="btn btn-primary${ios ? '' : ' btn-block'}" href="${esc(googleLink(route, viaStart))}" target="_blank" rel="noopener">Google Maps</a>
-        ${ios ? `<a class="btn btn-primary" href="${esc(appleLink(route, viaStart))}" target="_blank" rel="noopener">Apple Maps</a>` : ''}
+      <button class="btn btn-primary btn-block btn-tall" data-action="rt-drive">Start driving</button>
+      <p class="hint">Voice directions right here in the app, every turn, with no stops along the way.</p>
+      <div class="${ios ? 'two' : ''} rt-drive rt-gap">
+        <a class="btn${ios ? '' : ' btn-block'}" href="${esc(googleLink(route, viaStart))}" target="_blank" rel="noopener">Google Maps</a>
+        ${ios ? `<a class="btn" href="${esc(appleLink(route, viaStart))}" target="_blank" rel="noopener">Apple Maps</a>` : ''}
       </div>
       ${handoff}
       <div id="rt-actions">${routeButtons(route, mode)}</div>
@@ -1012,6 +995,17 @@ function defaultName(route) {
 
 // ---------- doing things ----------
 
+// Drive mode covers the screen; the route map underneath is let go meanwhile and drawn again after.
+function drive() {
+  const view = rs.view;
+  if (!view) return;
+  leaveRoutes();
+  startDrive({
+    route: view.route, mode: view.mode, deps, loadMapLib, mapStyle: MAP_STYLE,
+    onClose: () => { if (rs.view === view && document.getElementById('rt-map')) showMap(view.route); },
+  });
+}
+
 function hereNow() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
@@ -1084,6 +1078,7 @@ async function saveRoute() {
     id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`,
     name, createdAt: Date.now(), line: encodeLine(route.line), start: route.start, startKind: route.startKind,
     minutes: route.minutes, level: route.level, seconds: route.seconds, meters: route.meters, stops: route.stops, fromTurns: !!route.fromTurns,
+    guide: route.guide || null,
   };
   rs.saved = [saved, ...rs.saved];
   try {
@@ -1142,4 +1137,6 @@ export const routeActions = {
   'rt-turns': () => { rs.naming = null; deps.go('/routes/turns'); },
   'rt-turns-start': (el) => { rs.turnsStart = el.dataset.value; renderTurns(); },
   'rt-turns-build': () => buildTurns(),
+  'rt-drive': () => drive(),
+  ...driveActions,
 };

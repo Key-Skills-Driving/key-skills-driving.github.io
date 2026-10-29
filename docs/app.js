@@ -10,7 +10,7 @@ import {
 } from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.12.0';
+const VERSION = '3.13.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -2160,7 +2160,7 @@ function setupPullToReload() {
     pulling = false;
     if (reloading || e.touches.length !== 1 || state.busy || state.modify?.busy || !atTop()) return;
     if (e.target.closest?.('textarea, input, select')) return; // scrolling or selecting inside a box
-    if (e.target.closest?.('.rt-map')) return; // dragging the route map around
+    if (e.target.closest?.('.rt-map, .dv')) return; // dragging a route map around, or driving
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     armed = true;
@@ -2229,7 +2229,7 @@ async function start() {
     return;
   }
   setupRoutes({
-    app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device: () => state.device, appUrl: APP_URL,
+    app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device: () => state.device, appUrl: APP_URL, keepAwake,
   });
   addEventListener('hashchange', render);
   render();

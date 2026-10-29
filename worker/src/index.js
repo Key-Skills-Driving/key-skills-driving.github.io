@@ -10,6 +10,7 @@
 // admins can approve, remove or promote phones.
 import { buildPushPayload } from '@block65/webcrypto-web-push';
 import { systemPrompt, userMessage, modifyMessage, normalizeStyle, writeWithGemini, checkGeminiKey } from '../../docs/ai.js';
+import { cleanGuide } from '../../docs/drive.js';
 
 const APP_ORIGINS = new Set(['https://key-skills-driving.github.io', 'http://localhost:5173']);
 const MAX = { name: 40, raw: 8000, current: 8000, change: 2000, extra: 800, key: 200 };
@@ -288,7 +289,9 @@ async function addTestRoute(env, phone, input) {
     && route.stops.length <= 39 && Number.isFinite(route.start?.lat) && Number.isFinite(route.start?.lon);
   if (!ok) throw new Refusal(400, "That route didn't come through right. Build it again and retry.");
   const { line, start, startKind, minutes, level, seconds, meters, stops } = route;
-  const data = JSON.stringify({ line, start, startKind, minutes, level, seconds, meters, stops, fromTurns: route.fromTurns === true });
+  // The turn-by-turn directions Drive mode reads out, checked the same way the app checks them.
+  const guide = cleanGuide(route.guide);
+  const data = JSON.stringify({ line, start, startKind, minutes, level, seconds, meters, stops, fromTurns: route.fromTurns === true, guide });
   if (data.length > MAX_ROUTE_BYTES) throw new Refusal(413, 'That route is too long to share.');
   const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM test_routes').first();
   if (count.n >= MAX_TEST_ROUTES) throw new Refusal(409, `There are already ${MAX_TEST_ROUTES} test routes. Delete one first.`);

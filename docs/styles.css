@@ -928,3 +928,72 @@ textarea.big { min-height: 170px; }
 .rt-problems ul { margin: 6px 0 0; padding-left: 18px; }
 .rt-problems li + li { margin-top: 4px; }
 #rt-turns { min-height: 220px; }
+
+/* Drive mode (drive.js): full screen over the app, the map underneath, the next turn on top, the controls at the bottom. */
+html.dv-open, html.dv-open body { overflow: hidden; }
+.dv { position: fixed; inset: 0; z-index: 60; background: var(--bg); }
+.dv [hidden] { display: none !important; }
+.dv .dv-map { position: absolute; z-index: 0; inset: 0; } /* beats maplibre-gl.css (position: relative); z-index keeps its credits under the cards */
+.dv-map .maplibregl-ctrl-bottom-right { bottom: calc(var(--safe-bottom) + 76px); }
+.dv-map .maplibregl-ctrl-attrib { background: rgba(10, 15, 29, 0.8); color: var(--ink-2); font-size: 11px; }
+.dv-map .maplibregl-ctrl-attrib a { color: var(--ink-2); }
+.dv-map .maplibregl-ctrl-attrib.maplibregl-compact { background: rgba(10, 15, 29, 0.8); }
+.dv-car { width: 36px; height: 54px; filter: drop-shadow(0 2px 5px rgba(0, 0, 0, 0.7)); }
+.dv-car svg { display: block; }
+.dv-top {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  padding: calc(var(--safe-top) + 8px) max(10px, env(safe-area-inset-right, 0px)) 0 max(10px, env(safe-area-inset-left, 0px));
+  pointer-events: none;
+}
+.dv-top > * { pointer-events: auto; }
+.dv-banner {
+  display: flex;
+  align-items: center;
+  justify-self: stretch;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--header);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.5);
+  color: var(--header-ink);
+}
+.dv-arrow { display: grid; flex: none; place-items: center; width: 60px; height: 60px; border-radius: 14px; background: var(--brand); color: var(--brand-ink); }
+.dv-arrow svg { display: block; transition: transform 0.4s; }
+.dv-off .dv-arrow, .dv-warn .dv-arrow { background: var(--danger); color: #fff; }
+.dv-next { min-width: 0; }
+.dv-dist { margin: 0; font-size: 30px; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.dv-dist:empty { display: none; }
+.dv-what { margin: 2px 0 0; font-size: 19px; font-weight: 650; line-height: 1.25; overflow-wrap: anywhere; }
+.dv-then, .dv-note { max-width: 100%; margin: 0; padding: 7px 14px; border-radius: 999px; background: rgba(15, 29, 69, 0.94); font-size: 15px; font-weight: 650; }
+.dv-note { border-radius: 12px; background: var(--gold-soft); color: var(--gold-ink); }
+.dv-links { display: flex; flex-wrap: wrap; gap: 8px; }
+.dv-links .btn { background: var(--surface-2); }
+.dv-recenter { position: absolute; right: max(12px, env(safe-area-inset-right, 0px)); bottom: calc(var(--safe-bottom) + 92px); background: var(--surface-2); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); }
+.dv-sheet { position: absolute; right: 10px; bottom: calc(var(--safe-bottom) + 84px); left: 10px; margin: 0; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6); }
+.dv-sheet p { margin: 0 0 10px; }
+.dv-sheet .hint { margin: 0 0 14px; }
+.dv-bottom {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px max(12px, env(safe-area-inset-right, 0px)) calc(var(--safe-bottom) + 10px) max(12px, env(safe-area-inset-left, 0px));
+  border-top: 1px solid var(--line);
+  background: rgba(10, 15, 29, 0.95);
+}
+.dv-round { display: grid; flex: none; place-items: center; width: 54px; height: 54px; padding: 0; border: 0; border-radius: 50%; background: var(--surface-2); color: var(--ink); cursor: pointer; }
+.dv-round[aria-pressed="true"] { background: var(--gold-soft); color: var(--gold-ink); }
+.dv-left { flex: 1; min-width: 0; text-align: center; font-variant-numeric: tabular-nums; }
+.dv-left b { display: block; font-size: 22px; line-height: 1.2; }
+.dv-left span { color: var(--ink-2); font-size: 14px; }
+.dv-end { flex: none; min-width: 84px; height: 54px; padding: 0 18px; border: 0; border-radius: 27px; background: var(--danger); color: #fff; font-weight: 800; cursor: pointer; }
+.dv-end.armed { background: #fff; color: #b3261e; }
