@@ -236,55 +236,105 @@ function geminiProblem(status, data) {
   return e.message || `Gemini returned an error (${status}).`;
 }
 
-export async function writeWithGemini({ apiKey, system, user, signal }) {
-  const { controller, timer } = abortable(signal);
-  let problem = null;
-  try {
-    for (const model of GEMINI_MODELS) {
-      let lowThinking = true;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        const body = {
-          systemInstruction: { parts: [{ text: system }] },
-          contents: [{ role: 'user', parts: [{ text: user }] }],
-        };
-        // Rewriting notes doesn't need deep thought; low keeps answers quick.
-        if (lowThinking) body.generationConfig = { thinkingConfig: { thinkingLevel: 'low' } };
-        const res = await fetch(`${GEMINI_API}/${model}:generateContent`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
-          body: JSON.stringify(body),
-          signal: controller.signal,
-        });
-        const data = await res.json().catch(() => null);
-        if (res.ok) {
-          if (data?.promptFeedback?.blockReason) throw new FriendlyError(GEMINI_BLOCKED);
-          const candidate = data?.candidates?.[0];
-          const text = (candidate?.content?.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('').trim();
-          if (text) return text;
-          if (candidate?.finishReason === 'SAFETY') throw new FriendlyError(GEMINI_BLOCKED);
-          problem = 'Gemini sent back an empty answer. Try again.';
-          break;
-        }
-        // A model that doesn't take the thinking setting: ask again without it.
-        if (res.status === 400 && lowThinking && /thinking/i.test(data?.error?.message || '')) {
-          lowThinking = false;
-          continue;
-        }
-        problem = geminiProblem(res.status, data);
-        // A bad key or blocked account won't be fixed by trying another model.
-        if (res.status === 400 || res.status === 401 || res.status === 403) throw new FriendlyError(problem);
-        break;
-      }
+// The free models are often slow when they're busy, sometimes taking a minute or more. Each model now
+// gets HEDGE_MS on its own; after that the next model starts alongside it and the first good answer
+// wins (the rest are stopped). A model that fails outright (used up, busy, retired) hands over at once.
+// Asking two models uses a little more of the free allowance, but only on the slow days.
+export const GEMINI_HEDGE_MS = 15000;
+export const GEMINI_BUDGET_MS = 80000; // the phone waits 90 s for the school server, so its message gets through
+
+// One model, one answer. Throws a FriendlyError; .fatal means no other model would do better.
+async function askGemini(model, { apiKey, system, user, signal }) {
+  let lowThinking = true;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const body = {
+      systemInstruction: { parts: [{ text: system }] },
+      contents: [{ role: 'user', parts: [{ text: user }] }],
+    };
+    // Rewriting notes doesn't need deep thought; low keeps answers quick.
+    if (lowThinking) body.generationConfig = { thinkingConfig: { thinkingLevel: 'low' } };
+    const res = await fetch(`${GEMINI_API}/${model}:generateContent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify(body),
+      signal,
+    });
+    const data = await res.json().catch(() => null);
+    if (res.ok) {
+      const candidate = data?.candidates?.[0];
+      const text = (candidate?.content?.parts || []).filter((p) => p.text && !p.thought).map((p) => p.text).join('').trim();
+      if (text) return text;
+      if (data?.promptFeedback?.blockReason || candidate?.finishReason === 'SAFETY') throw Object.assign(new FriendlyError(GEMINI_BLOCKED), { fatal: true });
+      throw new FriendlyError('Gemini sent back an empty answer. Try again.');
     }
-    throw new FriendlyError(problem || "Gemini couldn't write the breakdown. Try again.");
-  } catch (err) {
-    if (err instanceof FriendlyError) throw err;
-    if (signal?.aborted) throw new Error(CANCELLED);
-    if (err?.name === 'AbortError') throw new Error('Gemini took too long. Try again.');
-    throw new Error('No connection to Gemini. Try again when you have signal, or use Copy for ChatGPT.');
-  } finally {
-    clearTimeout(timer);
+    // A model that doesn't take the thinking setting: ask again without it.
+    if (res.status === 400 && lowThinking && /thinking/i.test(data?.error?.message || '')) {
+      lowThinking = false;
+      continue;
+    }
+    // A bad key or blocked account won't be fixed by trying another model.
+    throw Object.assign(new FriendlyError(geminiProblem(res.status, data)), { fatal: [400, 401, 403].includes(res.status) });
   }
+  throw new FriendlyError("Gemini couldn't write the breakdown. Try again.");
+}
+
+export function writeWithGemini({ apiKey, system, user, signal, hedgeMs = GEMINI_HEDGE_MS, budgetMs = GEMINI_BUDGET_MS, retryMs = 4000 }) {
+  const controller = new AbortController(); // stops every request still going, once it's settled
+  return new Promise((resolve, reject) => {
+    let next = 0;
+    let round = 1;
+    let running = 0;
+    let problem = null;
+    let settled = false;
+    let hedge = null;
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hedge);
+      clearTimeout(budget);
+      signal?.removeEventListener('abort', onCancel);
+      controller.abort();
+      fn(value);
+    };
+    const onCancel = () => settle(reject, new Error(CANCELLED));
+    const budget = setTimeout(() => settle(reject, new Error('Gemini took too long. Try again in a minute, or use Copy for ChatGPT.')), budgetMs);
+    const start = () => {
+      if (settled) return;
+      clearTimeout(hedge);
+      if (next >= GEMINI_MODELS.length) {
+        if (running) return; // a slow one may still answer
+        // Every model said no. "Busy" often passes in seconds, so they all get one more go after a pause,
+        // instead of the instructor tapping again.
+        if (round === 1) {
+          round = 2;
+          next = 0;
+          hedge = setTimeout(start, retryMs);
+          return;
+        }
+        settle(reject, new FriendlyError(problem || "Gemini couldn't write the breakdown. Try again."));
+        return;
+      }
+      const model = GEMINI_MODELS[next++];
+      running += 1;
+      hedge = setTimeout(start, hedgeMs);
+      askGemini(model, { apiKey, system, user, signal: controller.signal }).then((text) => settle(resolve, text), (err) => {
+        running -= 1;
+        if (settled) return;
+        if (err?.fatal) {
+          settle(reject, err);
+          return;
+        }
+        problem = err instanceof FriendlyError ? err.message : 'No connection to Gemini. Try again when you have signal, or use Copy for ChatGPT.';
+        start();
+      });
+    };
+    if (signal?.aborted) {
+      onCancel();
+      return;
+    }
+    signal?.addEventListener('abort', onCancel, { once: true });
+    start();
+  });
 }
 
 // ---------- Claude (Anthropic), with the instructor's own key ----------

@@ -868,6 +868,17 @@ textarea.big { min-height: 170px; }
   border-radius: var(--radius);
   background: var(--surface);
 }
+/* Picking a start: a small map to tap, an address box, and the matches it found. */
+.rt-pick { height: 260px; margin-top: 10px; overflow: hidden; border: 1px solid var(--card-border); border-radius: var(--radius); background: var(--surface); }
+.rt-pick .maplibregl-ctrl-attrib { background: rgba(10, 15, 29, 0.8); color: var(--ink-2); font-size: 11px; }
+.rt-pick .maplibregl-ctrl-attrib a { color: var(--ink-2); }
+.rt-pick .maplibregl-ctrl-attrib.maplibregl-compact { background: rgba(10, 15, 29, 0.8); }
+.rt-find { display: flex; gap: 8px; }
+.rt-find input { flex: 1; min-width: 0; }
+.rt-find .btn { flex: none; min-width: 76px; }
+.rt-places { display: grid; gap: 6px; margin-top: 10px; }
+.rt-picked { margin: 10px 2px 0; font-weight: 700; }
+.rt-places .chip { padding: 10px 12px; text-align: left; }
 .rt-map-off { display: grid; place-items: center; padding: 16px; color: var(--ink-3); text-align: center; }
 .rt-map .maplibregl-ctrl-attrib { background: rgba(10, 15, 29, 0.8); color: var(--ink-2); font-size: 11px; }
 .rt-map .maplibregl-ctrl-attrib a { color: var(--ink-2); }

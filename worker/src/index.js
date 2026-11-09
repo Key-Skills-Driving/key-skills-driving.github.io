@@ -76,6 +76,7 @@ async function handle(request, env, ctx) {
       return { text: await write(env, systemPrompt(text(input.extra, MAX.extra), normalizeStyle(input.style)), user) };
     }
     case 'POST /route': await allowWriting(phone, env); return drivingRoute(env, input);
+    case 'POST /geocode': await allowWriting(phone, env); return findPlace(env, input);
     case 'GET /test-routes': requireApproved(phone); return listTestRoutes(env);
     case 'POST /test-routes': await requireAdmin(phone); return addTestRoute(env, phone, input);
     case 'POST /test-routes/delete': await requireAdmin(phone); return deleteTestRoute(env, input.id);
@@ -258,6 +259,31 @@ async function drivingRoute(env, input) {
   if (res.status === 429) throw new Refusal(429, 'The free route service is busy or used up for today. Try again in a minute.');
   // ORS names the point it couldn't reach ("coordinate 3"), which the app uses to swap that spot out.
   throw new Refusal(422, detail || "Couldn't find a driving route through those spots.");
+}
+
+// ---------- addresses ----------
+// A route can start at an address an instructor types (a student's street, a test site). Only the typed
+// text goes to the free OpenRouteService search, with the school's key; nothing is kept.
+const GEOCODE_URL = 'https://api.openrouteservice.org/geocode/search';
+
+async function findPlace(env, input) {
+  if (!env.ORS_KEY) throw new Refusal(503, "Routes aren't set up on the school server yet. Let your admin know.");
+  const q = text(input.text, 200, 'address');
+  // The valley, nearest the office first, so "123 Main St" finds the local one.
+  const params = new URLSearchParams({
+    text: q, size: '5', 'boundary.country': 'USA',
+    'boundary.rect.min_lat': '32.9', 'boundary.rect.max_lat': '33.9', 'boundary.rect.min_lon': '-112.8', 'boundary.rect.max_lon': '-111.2',
+    'focus.point.lat': '33.31922', 'focus.point.lon': '-111.96155',
+  });
+  const res = await fetch(`${GEOCODE_URL}?${params}`, { headers: { Authorization: env.ORS_KEY, Accept: 'application/json' } });
+  if (res.status === 401 || res.status === 403) throw new Refusal(502, "The school's route key isn't working. Let your admin know.");
+  if (res.status === 429) throw new Refusal(429, 'The free address search is busy or used up for today. Drop a pin instead.');
+  if (!res.ok) throw new Refusal(502, "Couldn't search for that address. Try again, or drop a pin.");
+  const data = await res.json();
+  const places = (data.features || [])
+    .map((f) => ({ label: String(f.properties?.label || '').replace(/, (USA|United States)$/, '').slice(0, 120), lat: f.geometry?.coordinates?.[1], lon: f.geometry?.coordinates?.[0] }))
+    .filter((p) => p.label && Number.isFinite(p.lat) && Number.isFinite(p.lon));
+  return { places };
 }
 
 // ---------- test routes ----------

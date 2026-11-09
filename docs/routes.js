@@ -51,6 +51,10 @@ const rs = {
   turnsText: '', // a test route typed in as turns, kept while you go back and fix a line
   turnsStart: 'office',
   turnsCorner: '', // the Corner start, like "Greenfield & Baseline"
+  pick: null, // a start dropped on the map or found by address: { at, label }, shared by both screens
+  pickResults: null, // what the address search found (null before a search)
+  addressText: '',
+  finding: false,
 };
 
 export function setupRoutes(shared) {
@@ -73,7 +77,8 @@ function seeded(seed) {
   };
 }
 
-const fromLabel = (r) => (r.startKind === 'corner' ? `From ${r.startName || 'a corner'}` : r.startKind === 'here' ? 'From where you were' : 'From the office');
+const fromLabel = (r) => (r.startKind === 'corner' || r.startKind === 'spot' ? `From ${r.startName || 'a spot you picked'}`
+  : r.startKind === 'here' ? 'From where you were' : 'From the office');
 const minutesLabel = (m) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)} hr${m % 60 ? ` ${m % 60} min` : ''}`);
 const miles = (meters) => (meters / 1609.34).toFixed(1);
 const lengthLabel = (m) => LENGTHS.find(([v]) => v === m)?.[1] || minutesLabel(m);
@@ -323,7 +328,7 @@ async function buildRoute(settings, seed, signal, onStatus) {
   const { start, minutes, level } = settings;
   const skills = [...settings.skills];
   const avoidFreeways = level === 'beginner';
-  const startRadius = settings.startKind === 'here' ? 300 : 150;
+  const startRadius = settings.startKind === 'office' ? 150 : 300; // a driveway or a back lot needs more room
   const excluded = new Set();
   const target = minutes * 60;
   let scale = 1;
@@ -494,7 +499,8 @@ async function buildFromTurns(text, startKind, cornerText, signal, onStatus) {
   if (turns.length > MAX_TURNS + 1) throw new Error(`That's ${turns.length} turns; a route can take up to ${MAX_TURNS + 1}. Split it in two.`);
   onStatus(startKind === 'here' ? 'Finding where you are…' : startKind === 'corner' ? 'Finding the corner…' : 'Finding the streets…');
   const corner = startKind === 'corner' ? await findCorner(cornerText) : null;
-  const start = corner ? corner.at : startKind === 'here' ? await hereNow() : OFFICE;
+  const picked = corner ? { at: corner.at, kind: 'corner', name: corner.name } : await startPoint(startKind, true);
+  const start = picked.at;
   const crossings = await crossingsAround(start, 15000);
   if (!crossings.length) throw new Error("That start is outside the area the app has streets for (Phoenix to Queen Creek).");
   // Each turn after the first happens where the previous street meets this one.
@@ -568,7 +574,7 @@ async function buildFromTurns(text, startKind, cornerText, signal, onStatus) {
   ];
   return {
     line: line.map((p) => [p.lat, p.lon]), seconds: feature.properties.summary.duration, meters: feature.properties.summary.distance,
-    stops, start, startKind, startName: corner?.name || '', minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
+    stops, start, startKind: picked.kind, startName: picked.name, minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
     guide: makeGuide(feature),
   };
 }
@@ -671,6 +677,8 @@ async function showMap(route) {
 export function leaveRoutes() {
   map?.remove();
   map = null;
+  pickMap?.remove();
+  pickMap = null;
 }
 
 // ---------- saved routes ----------
@@ -695,7 +703,7 @@ function cleanRoutes(list) {
     } : null)).filter(Boolean).slice(0, MAX_TURNS + 1);
     return {
       id: r.id, name: String(r.name || 'Practice route').slice(0, 80), createdAt: num(r.createdAt) || Date.now(), line: r.line,
-      start: pt(r.start), startKind: ['here', 'corner'].includes(r.startKind) ? r.startKind : 'office', startName: String(r.startName || '').slice(0, 60), minutes: num(r.minutes) || 60,
+      start: pt(r.start), startKind: ['here', 'corner', 'spot'].includes(r.startKind) ? r.startKind : 'office', startName: String(r.startName || '').slice(0, 60), minutes: num(r.minutes) || 60,
       level: LEVELS.some(([v]) => v === r.level) ? r.level : 'building', seconds: num(r.seconds) || 0, meters: num(r.meters) || 0, stops,
       fromTurns: r.fromTurns === true, guide: cleanGuide(r.guide),
     };
@@ -862,8 +870,7 @@ function renderBuilder() {
       ${approved || rs.tests.length ? `<h2 class="list-title rt-first">Test routes</h2>${tests}<h2 class="list-title">Build a route</h2>` : ''}
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
-          ${chips('rt-start', [['office', 'Office'], ['here', 'Here (GPS)']], (v) => v === rs.start)}
-          ${rs.start === 'here' ? '<p class="hint">Uses where the phone is when you tap Build, like a student\'s house.</p>' : '<p class="hint">6909 W Ray Rd, Chandler.</p>'}
+          ${startPicker('rt-start', rs.start, [['office', 'Office'], ['here', 'Here (GPS)'], ['pin', 'Pin'], ['address', 'Address']])}
         </div>
         <div class="rt-row"><span class="label">Length</span>${chips('rt-length', LENGTHS.map(([v, l]) => [String(v), l]), (v) => Number(v) === rs.minutes, ' rt-chips-3')}</div>
         <div class="rt-row"><span class="label">Level</span>${chips('rt-level', LEVELS, (v) => v === rs.level)}
@@ -878,6 +885,7 @@ function renderBuilder() {
       ${saved ? `<h2 class="list-title">Saved routes</h2><div class="list">${saved}</div>` : ''}
     </main>
     ${deps.tabbar('routes')}`;
+  if (rs.start === 'pin' || rs.start === 'address') showPickMap();
 }
 
 // mode: new (just built), saved (on this phone), test (the school's), student (opened from a link).
@@ -965,11 +973,7 @@ function renderTurns() {
     <main class="view with-tabs routes-view">
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
-          ${chips('rt-turns-start', [['office', 'Office'], ['here', 'Here (GPS)'], ['corner', 'Corner']], (v) => v === rs.turnsStart)}
-          ${rs.turnsStart === 'corner'
-    ? `<label class="field rt-gap"><span class="label">Where two streets meet, by the start</span><input id="rt-corner" value="${esc(rs.turnsCorner)}" placeholder="Greenfield & Baseline" autocomplete="off" autocapitalize="words"></label>
-          <p class="hint">For a test route away from the office. The S pin goes on that corner.</p>`
-    : `<p class="hint">${rs.turnsStart === 'here' ? 'Uses where the phone is when you tap Build, so stand at the start.' : '6909 W Ray Rd, Chandler.'}</p>`}
+          ${startPicker('rt-turns-start', rs.turnsStart, [['office', 'Office'], ['here', 'Here (GPS)'], ['corner', 'Corner'], ['pin', 'Pin'], ['address', 'Address']])}
         </div>
         <label class="field rt-row"><span class="label">Turns, one per line</span>
           <textarea id="rt-turns" rows="10" placeholder="Right on Ray Rd&#10;Left on Kyrene Rd&#10;Left on Warner Rd&#10;Parallel park on the right&#10;Left on 56th St&#10;Left on Ray Rd" autocapitalize="sentences">${esc(rs.turnsText)}</textarea></label>
@@ -980,6 +984,7 @@ function renderTurns() {
       </section>
     </main>
     ${deps.tabbar('routes')}`;
+  if (rs.turnsStart === 'pin' || rs.turnsStart === 'address') showPickMap();
   const box = document.getElementById('rt-turns');
   if (box) {
     box.style.height = 'auto';
@@ -1013,6 +1018,7 @@ async function buildTurns() {
 export function routesInput(el) {
   if (el.id === 'rt-turns') rs.turnsText = el.value;
   if (el.id === 'rt-corner') rs.turnsCorner = el.value;
+  if (el.id === 'rt-address') rs.addressText = el.value;
 }
 
 function redrawButtons() {
@@ -1031,7 +1037,118 @@ function openNameBox(kind) {
 function defaultName(route) {
   if (route.fromTurns) return `Turns from ${route.startKind === 'here' ? 'here' : route.startName || 'the office'}, ${minutesLabel(Math.round(route.seconds / 60))}`.slice(0, 80);
   const kinds = [...new Set(route.stops.map((s) => s.kind))].map((k) => SKILLS.find(([id]) => id === k)?.[1]).filter(Boolean);
-  return `${route.startKind === 'here' ? 'Here' : 'Office'}, ${lengthLabel(route.minutes)}: ${kinds.slice(0, 3).join(', ')}`.slice(0, 80);
+  const from = { here: 'Here', spot: 'Picked spot' }[route.startKind] || 'Office';
+  return `${from}, ${lengthLabel(route.minutes)}: ${kinds.slice(0, 3).join(', ')}`.slice(0, 80);
+}
+
+// ---------- where a route starts ----------
+// The office, the phone's GPS, a pin dropped on a small map, an address, or (for a typed-in test route)
+// where two streets meet. Pin and Address share one picked spot, which can be tapped or dragged on the map.
+
+const START_HINT = {
+  office: '6909 W Ray Rd, Chandler.',
+  here: 'Uses where the phone is when you tap Build, like a student\'s house.',
+};
+
+function startPicker(action, value, choices) {
+  const pickBox = '<div id="rt-pick" class="rt-pick" role="application" aria-label="Map: tap where the route starts"></div>';
+  let more;
+  if (value === 'corner') {
+    more = `<label class="field rt-gap"><span class="label">Where two streets meet, by the start</span><input id="rt-corner" value="${esc(rs.turnsCorner)}" placeholder="Greenfield & Baseline" autocomplete="off" autocapitalize="words"></label>
+      <p class="hint">For a test route away from the office. The S pin goes on that corner.</p>`;
+  } else if (value === 'pin') {
+    more = `${pickBox}<p class="hint">Tap the map where the route starts, then drag the pin to fine-tune. Pinch to zoom.</p>`;
+  } else if (value === 'address') {
+    const found = rs.pickResults;
+    more = `<div class="rt-find rt-gap">
+        <input id="rt-address" value="${esc(rs.addressText)}" placeholder="Address or place" autocomplete="off" enterkeyhint="search" aria-label="Address">
+        <button type="button" class="btn" data-action="rt-geocode"${rs.finding ? ' disabled' : ''}>${rs.finding ? '<span class="spinner"></span>' : 'Find'}</button>
+      </div>
+      ${found && !found.length ? '<p class="hint rt-warn">Nothing found. Add the city, or drop a pin instead.</p>' : ''}
+      ${found?.length > 1 ? `<div class="rt-places">${found.map((p, i) => `<button type="button" class="chip${rs.pick?.label === p.label ? ' on' : ''}" data-action="rt-place" data-index="${i}">${esc(p.label)}</button>`).join('')}</div>` : ''}
+      ${rs.pick ? `${rs.pick.label ? `<p class="rt-picked">Start: ${esc(rs.pick.label)}</p>` : ''}${pickBox}<p class="hint">Drag the pin if the start is round the back or in a lot.</p>` : ''}
+      <p class="hint">Only the address goes to the free map service, with no names, and it isn't kept.</p>`;
+  } else {
+    more = `<p class="hint">${START_HINT[value] || ''}</p>`;
+  }
+  return chips(action, choices, (v) => v === value) + more;
+}
+
+let pickMap = null;
+
+async function showPickMap() {
+  const el = document.getElementById('rt-pick');
+  if (!el) return;
+  let ml;
+  try {
+    ml = await loadMapLib();
+  } catch {
+    el.classList.add('rt-map-off');
+    el.textContent = "The map couldn't load. Try an address instead.";
+    return;
+  }
+  if (!el.isConnected) return;
+  pickMap?.remove();
+  const at = rs.pick?.at || OFFICE;
+  const m = new ml.Map({
+    container: el, style: MAP_STYLE, center: [at.lon, at.lat], zoom: rs.pick ? 16 : 11,
+    attributionControl: { compact: true }, dragRotate: false, pitchWithRotate: false, touchPitch: false,
+  });
+  pickMap = m;
+  m.touchZoomRotate.disableRotation();
+  m.setMissingStyleImageResolver((id) => {
+    if (!m.hasImage(id)) m.addImage(id, { width: 1, height: 1, data: new Uint8Array(4) });
+  });
+  const marker = new ml.Marker({ element: pin('S', ' rt-pin-start'), draggable: true });
+  if (rs.pick) marker.setLngLat([at.lon, at.lat]).addTo(m);
+  // A tap moves the pin there; an address keeps its name when only nudged.
+  m.on('click', (e) => {
+    const byAddress = (onTurnsScreen() ? rs.turnsStart : rs.start) === 'address';
+    rs.pick = { at: { lat: e.lngLat.lat, lon: e.lngLat.lng }, label: byAddress ? rs.pick?.label || '' : '' };
+    marker.setLngLat(e.lngLat).addTo(m);
+  });
+  marker.on('dragend', () => {
+    const ll = marker.getLngLat();
+    rs.pick = { ...rs.pick, at: { lat: ll.lat, lon: ll.lng } };
+  });
+}
+
+const onTurnsScreen = () => location.hash === '#/routes/turns';
+const redrawStart = () => (onTurnsScreen() ? renderTurns() : renderBuilder());
+
+async function findAddress() {
+  const text = (document.getElementById('rt-address')?.value ?? rs.addressText).trim();
+  rs.addressText = text;
+  if (!text) {
+    deps.toast('Type an address first');
+    return;
+  }
+  if (rs.finding) return;
+  rs.finding = true;
+  redrawStart();
+  try {
+    const { places } = await deps.school('/geocode', { text });
+    rs.pickResults = places || [];
+    // One clear match goes straight on the map; more than one, the instructor picks.
+    rs.pick = rs.pickResults.length === 1 ? { at: { lat: places[0].lat, lon: places[0].lon }, label: places[0].label } : null;
+  } catch (err) {
+    deps.toast(err.message);
+  } finally {
+    rs.finding = false;
+    redrawStart();
+  }
+}
+
+// The chosen start as a point, what kind it is and what to call it. A practice route's start is often a
+// student's house, so its address isn't kept with the route (saved routes would become a student list);
+// a test route's is (it's a test site).
+async function startPoint(kind, keepName) {
+  if (kind === 'here') return { at: await hereNow(), kind: 'here', name: '' };
+  if (kind === 'pin' || kind === 'address') {
+    if (!rs.pick) throw new Error(kind === 'pin' ? 'Tap the map to drop the start pin first.' : 'Find the address and pick it from the list first.');
+    return { at: rs.pick.at, kind: 'spot', name: keepName ? rs.pick.label || 'a dropped pin' : '' };
+  }
+  return { at: OFFICE, kind: 'office', name: '' };
 }
 
 // ---------- doing things ----------
@@ -1086,11 +1203,12 @@ async function build({ stay = false } = {}) {
   if (stay || location.hash === '#/routes') redraw();
   else deps.go('/routes');
   try {
-    const start = rs.start === 'here' ? await hereNow() : OFFICE;
-    const settings = { start, startKind: rs.start, minutes: rs.minutes, level: rs.level, skills: rs.skills };
+    const picked = await startPoint(rs.start, false);
+    const start = picked.at;
+    const settings = { start, startKind: picked.kind, minutes: rs.minutes, level: rs.level, skills: rs.skills };
     const route = await buildRoute(settings, seed, controller.signal, setStatus);
     if (controller.signal.aborted) return;
-    rs.route = { ...route, start, startKind: rs.start, minutes: rs.minutes, level: rs.level, seed };
+    rs.route = { ...route, start, startKind: picked.kind, startName: picked.name, minutes: rs.minutes, level: rs.level, seed };
     rs.building = null;
     if (location.hash.startsWith('#/routes')) deps.go('/routes/route');
     else deps.toast('Your route is ready in Routes'); // they went to another tab meanwhile
@@ -1161,7 +1279,9 @@ export const routeActions = {
   'rt-cancel': () => cancelBuild(),
   'rt-shuffle': () => {
     if (!rs.route) return;
-    rs.start = rs.route.startKind;
+    // Shuffle keeps the same start; a picked one goes back on the map as a pin.
+    rs.start = rs.route.startKind === 'spot' ? 'pin' : rs.route.startKind;
+    if (rs.route.startKind === 'spot') rs.pick = { at: rs.route.start, label: rs.pick?.label || '' };
     rs.minutes = rs.route.minutes;
     rs.level = rs.route.level;
     build({ stay: true });
@@ -1179,5 +1299,12 @@ export const routeActions = {
   'rt-turns-start': (el) => { rs.turnsStart = el.dataset.value; renderTurns(); },
   'rt-turns-build': () => buildTurns(),
   'rt-drive': () => drive(),
+  'rt-geocode': () => findAddress(),
+  'rt-place': (el) => {
+    const p = rs.pickResults?.[Number(el.dataset.index)];
+    if (!p) return;
+    rs.pick = { at: { lat: p.lat, lon: p.lon }, label: p.label };
+    redrawStart();
+  },
   ...driveActions,
 };

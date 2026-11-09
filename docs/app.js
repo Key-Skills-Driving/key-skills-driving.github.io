@@ -10,7 +10,7 @@ import {
 } from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.13.1';
+const VERSION = '3.14.0';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },
@@ -221,10 +221,11 @@ async function ensureDevice() {
 }
 
 // Calls the school server as this phone. Throws an Error with a message fit to show, and .status.
-async function school(path, body, { signal } = {}) {
+// Breakdowns wait longer (90 s) than the server gives Gemini (80 s), so the server's own message arrives.
+async function school(path, body, { signal, seconds = 60 } = {}) {
   const d = await ensureDevice();
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 60000);
+  const timer = setTimeout(() => controller.abort(), seconds * 1000);
   if (signal?.aborted) controller.abort();
   else signal?.addEventListener('abort', () => controller.abort(), { once: true });
   let res;
@@ -237,7 +238,7 @@ async function school(path, body, { signal } = {}) {
     });
   } catch (err) {
     if (signal?.aborted) throw new Error(CANCELLED);
-    throw new Error(err?.name === 'AbortError' ? 'No answer after 60 seconds. Check your signal and try again.' : "Couldn't reach the school server. Check your signal and try again.");
+    throw new Error(err?.name === 'AbortError' ? `No answer after ${seconds} seconds. Check your signal and try again.` : "Couldn't reach the school server. Check your signal and try again.");
   } finally {
     clearTimeout(timer);
   }
@@ -650,7 +651,7 @@ async function askAI({ raw, current, change, signal }) {
   const modifying = current !== undefined;
   if (aiProvider() === 'school') {
     try {
-      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra, style }, { signal });
+      const data = await school(modifying ? '/modify' : '/breakdown', { raw, current, change, extra, style }, { signal, seconds: 90 });
       return data.text;
     } catch (err) {
       // Approval can be taken away; find out so the join card comes back.
@@ -2025,6 +2026,10 @@ document.addEventListener('keydown', (e) => {
     e.preventDefault();
     copyItem(e.target);
   }
+  if (e.key === 'Enter' && e.target.id === 'rt-address') {
+    e.preventDefault();
+    actions['rt-geocode']();
+  }
   if (e.key === 'Enter' && e.target.id === 'join-name') {
     e.preventDefault();
     joinSchool($('[data-action=join]'));
@@ -2160,7 +2165,7 @@ function setupPullToReload() {
     pulling = false;
     if (reloading || e.touches.length !== 1 || state.busy || state.modify?.busy || !atTop()) return;
     if (e.target.closest?.('textarea, input, select')) return; // scrolling or selecting inside a box
-    if (e.target.closest?.('.rt-map, .dv')) return; // dragging a route map around, or driving
+    if (e.target.closest?.('.rt-map, .rt-pick, .dv')) return; // dragging a map around, or driving
     startX = e.touches[0].clientX;
     startY = e.touches[0].clientY;
     armed = true;
