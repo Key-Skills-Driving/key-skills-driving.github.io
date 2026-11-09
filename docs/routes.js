@@ -1,4 +1,4 @@
-// Routes tab: a practice-route maker. Pick a start (the office, or Here from the phone's GPS), a length,
+// Routes tab: a practice-route maker. Pick a start (Here from the phone's GPS, a Pin or an Address), a length,
 // the student's level and the skills to practice; it builds a loop that leaves from the start, passes
 // real spots for those skills and comes back, sized to the time. Start driving opens Drive mode
 // (drive.js) for voice directions in the app; Google Maps and Apple Maps links are there too.
@@ -11,7 +11,9 @@
 import { dist, bearing, offset, turnAngle, shortName } from './geo.js';
 import { makeGuide, cleanGuide, startDrive, driveActions } from './drive.js';
 
-// 6909 W Ray Rd, Chandler. Test-ready loops lean toward here, where road tests happen.
+// 6909 W Ray Rd, Chandler. Not a start choice since v3.15 (his call: pin it or type it in); it stays as the
+// point Test-ready loops lean toward (road tests happen here), the pin map's first view and the tie-break
+// between two corners with the same streets. Routes saved with an office start still open.
 const OFFICE = { lat: 33.31922, lon: -111.96155 };
 const MAP_STYLE = 'https://tiles.openfreemap.org/styles/dark';
 const LENGTHS = [[30, '30 min'], [45, '45 min'], [60, '1 hr'], [90, '1½ hr'], [120, '2 hr'], [150, '2½ hr']];
@@ -35,7 +37,7 @@ const SNAP_M = 35; // a spot counts as passed when the route goes within this ma
 
 let deps; // what app.js shares: app, header, backLink, tabbar, esc, toast, copyText, school, db, go, platform, device, appUrl, keepAwake
 const rs = {
-  start: 'office',
+  start: 'here',
   minutes: 60,
   level: 'building',
   skills: new Set(['lt', 'rb', 'ml']),
@@ -49,7 +51,7 @@ const rs = {
   building: null, // { status, controller } while a build runs
   naming: null, // the name box is open: 'save' (on this phone) or 'test' (for the school)
   turnsText: '', // a test route typed in as turns, kept while you go back and fix a line
-  turnsStart: 'office',
+  turnsStart: 'corner',
   turnsCorner: '', // the Corner start, like "Greenfield & Baseline"
   pick: null, // a start dropped on the map or found by address: { at, label }, shared by both screens
   pickResults: null, // what the address search found (null before a search)
@@ -286,7 +288,7 @@ async function fetchRoute(start, stops, startRadius, avoidFreeways, signal) {
     // The route service says which point it couldn't reach; swap that spot out and try again.
     const m = /coordinate (\d+)/i.exec(err.message || '');
     if (m && owner[Number(m[1])] >= 0) return { unreachable: stops[owner[Number(m[1])]] };
-    if (m) throw new Error("Couldn't reach a road from the start point. Try the office, or step outside so GPS is better.");
+    if (m) throw new Error("Couldn't reach a road from the start point. Move the pin onto a road, or step outside so GPS is better.");
     throw err;
   }
 }
@@ -337,7 +339,7 @@ async function buildRoute(settings, seed, signal, onStatus) {
   onStatus('Finding practice spots…');
   for (let attempt = 1; attempt <= MAX_TRIES; attempt++) {
     const spots = await spotsAround(start, loopRadius(minutes) * Math.min(scale, 2.2) * 2 + 2500);
-    if (!Object.keys(spots).length) throw new Error("That start is outside the area the app has map spots for (Phoenix to Queen Creek). Start from the office, or ask Eli to widen it.");
+    if (!Object.keys(spots).length) throw new Error("That start is outside the area the app has map spots for (Phoenix to Queen Creek). Pick a start inside it, or ask Eli to widen it.");
     const plan = planStops({ start, minutes, level, skills, rand: seeded(seed), scale, spots, excluded });
     if (!plan.stops.length) throw new Error('No spots for those skills near this start. Try more skills or a longer lesson.');
     onStatus(`Checking the route (try ${attempt} of ${MAX_TRIES})…`);
@@ -462,7 +464,7 @@ async function crossingsAround(center, meters) {
 
 const meets = (c, a, b) => (sameStreet(a, c.a.key) && sameStreet(b, c.b.key)) || (sameStreet(a, c.b.key) && sameStreet(b, c.a.key));
 
-// "Greenfield & Baseline": a test route that starts away from the office starts where two streets meet.
+// "Greenfield & Baseline": a test route can start where two streets meet.
 // The whole map area is searched (about 2.5 MB the first time, then kept by the phone).
 async function findCorner(text) {
   const names = String(text || '').split(/\s*(?:&|\/|,|\band\b|\bat\b)\s*/i).map((n) => n.trim()).filter(Boolean);
@@ -522,7 +524,7 @@ async function buildFromTurns(text, startKind, cornerText, signal, onStatus) {
     from = near.at;
   }
   // None found at all usually means the start is wrong: the streets are searched around it.
-  if (!points.length) throw new Error(`${problems[0]} None of the turns were found near the start: for a route away from the office, start from a Corner.`);
+  if (!points.length) throw new Error(`${problems[0]} None of the turns were found near the start: check the start is by the first street.`);
   // The router is aimed 40 m past each turn, already on the new street and heading toward the next
   // crossing. Aimed at the crossing itself, it may cut through a side road and arrive from the wrong way.
   const nextAt = (k) => points[k + 1]?.at || start;
@@ -870,7 +872,7 @@ function renderBuilder() {
       ${approved || rs.tests.length ? `<h2 class="list-title rt-first">Test routes</h2>${tests}<h2 class="list-title">Build a route</h2>` : ''}
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
-          ${startPicker('rt-start', rs.start, [['office', 'Office'], ['here', 'Here (GPS)'], ['pin', 'Pin'], ['address', 'Address']])}
+          ${startPicker('rt-start', rs.start, [['here', 'Here (GPS)'], ['pin', 'Pin'], ['address', 'Address']])}
         </div>
         <div class="rt-row"><span class="label">Length</span>${chips('rt-length', LENGTHS.map(([v, l]) => [String(v), l]), (v) => Number(v) === rs.minutes, ' rt-chips-3')}</div>
         <div class="rt-row"><span class="label">Level</span>${chips('rt-level', LEVELS, (v) => v === rs.level)}
@@ -973,7 +975,7 @@ function renderTurns() {
     <main class="view with-tabs routes-view">
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
-          ${startPicker('rt-turns-start', rs.turnsStart, [['office', 'Office'], ['here', 'Here (GPS)'], ['corner', 'Corner'], ['pin', 'Pin'], ['address', 'Address']])}
+          ${startPicker('rt-turns-start', rs.turnsStart, [['corner', 'Corner'], ['address', 'Address'], ['pin', 'Pin'], ['here', 'Here (GPS)']])}
         </div>
         <label class="field rt-row"><span class="label">Turns, one per line</span>
           <textarea id="rt-turns" rows="10" placeholder="Right on Ray Rd&#10;Left on Kyrene Rd&#10;Left on Warner Rd&#10;Parallel park on the right&#10;Left on 56th St&#10;Left on Ray Rd" autocapitalize="sentences">${esc(rs.turnsText)}</textarea></label>
@@ -1042,11 +1044,10 @@ function defaultName(route) {
 }
 
 // ---------- where a route starts ----------
-// The office, the phone's GPS, a pin dropped on a small map, an address, or (for a typed-in test route)
+// The phone's GPS, a pin dropped on a small map, an address, or (for a typed-in test route)
 // where two streets meet. Pin and Address share one picked spot, which can be tapped or dragged on the map.
 
 const START_HINT = {
-  office: '6909 W Ray Rd, Chandler.',
   here: 'Uses where the phone is when you tap Build, like a student\'s house.',
 };
 
@@ -1055,7 +1056,7 @@ function startPicker(action, value, choices) {
   let more;
   if (value === 'corner') {
     more = `<label class="field rt-gap"><span class="label">Where two streets meet, by the start</span><input id="rt-corner" value="${esc(rs.turnsCorner)}" placeholder="Greenfield & Baseline" autocomplete="off" autocapitalize="words"></label>
-      <p class="hint">For a test route away from the office. The S pin goes on that corner.</p>`;
+      <p class="hint">The S pin goes on that corner.</p>`;
   } else if (value === 'pin') {
     more = `${pickBox}<p class="hint">Tap the map where the route starts, then drag the pin to fine-tune. Pinch to zoom.</p>`;
   } else if (value === 'address') {
@@ -1148,7 +1149,7 @@ async function startPoint(kind, keepName) {
     if (!rs.pick) throw new Error(kind === 'pin' ? 'Tap the map to drop the start pin first.' : 'Find the address and pick it from the list first.');
     return { at: rs.pick.at, kind: 'spot', name: keepName ? rs.pick.label || 'a dropped pin' : '' };
   }
-  return { at: OFFICE, kind: 'office', name: '' };
+  throw new Error('Pick where the route starts.');
 }
 
 // ---------- doing things ----------
@@ -1167,13 +1168,13 @@ function drive() {
 function hereNow() {
   return new Promise((resolve, reject) => {
     if (!navigator.geolocation) {
-      reject(new Error("This phone can't share its location here. Start from the office."));
+      reject(new Error("This phone can't share its location here. Use a Pin or an Address."));
       return;
     }
     navigator.geolocation.getCurrentPosition(
       (pos) => resolve({ lat: pos.coords.latitude, lon: pos.coords.longitude }),
       (err) => reject(new Error(err.code === 1
-        ? "Location is turned off for this app. Allow it in the phone's settings, or start from the office."
+        ? "Location is turned off for this app. Allow it in the phone's settings, or use a Pin or an Address."
         : "Couldn't get a GPS fix. Step outside or try again.")),
       { enableHighAccuracy: true, timeout: 20000, maximumAge: 60000 },
     );
