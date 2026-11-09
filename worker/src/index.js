@@ -291,7 +291,9 @@ async function addTestRoute(env, phone, input) {
   const { line, start, startKind, minutes, level, seconds, meters, stops } = route;
   // The turn-by-turn directions Drive mode reads out, checked the same way the app checks them.
   const guide = cleanGuide(route.guide);
-  const data = JSON.stringify({ line, start, startKind, minutes, level, seconds, meters, stops, fromTurns: route.fromTurns === true, guide });
+  // A route away from the office starts at a corner the admin typed, like "Greenfield & Baseline".
+  const startName = typeof route.startName === 'string' ? route.startName.slice(0, 60) : '';
+  const data = JSON.stringify({ line, start, startKind, startName, minutes, level, seconds, meters, stops, fromTurns: route.fromTurns === true, guide });
   if (data.length > MAX_ROUTE_BYTES) throw new Refusal(413, 'That route is too long to share.');
   const count = await env.DB.prepare('SELECT COUNT(*) AS n FROM test_routes').first();
   if (count.n >= MAX_TEST_ROUTES) throw new Refusal(409, `There are already ${MAX_TEST_ROUTES} test routes. Delete one first.`);

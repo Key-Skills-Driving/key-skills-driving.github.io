@@ -10,7 +10,7 @@ import {
 } from './routes.js';
 
 // Bump together with CACHE in sw.js on every release.
-const VERSION = '3.13.0';
+const VERSION = '3.13.1';
 
 const AI_APPS = {
   chatgpt: { label: 'ChatGPT', url: 'https://chatgpt.com/' },

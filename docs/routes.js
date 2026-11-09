@@ -50,6 +50,7 @@ const rs = {
   naming: null, // the name box is open: 'save' (on this phone) or 'test' (for the school)
   turnsText: '', // a test route typed in as turns, kept while you go back and fix a line
   turnsStart: 'office',
+  turnsCorner: '', // the Corner start, like "Greenfield & Baseline"
 };
 
 export function setupRoutes(shared) {
@@ -72,6 +73,7 @@ function seeded(seed) {
   };
 }
 
+const fromLabel = (r) => (r.startKind === 'corner' ? `From ${r.startName || 'a corner'}` : r.startKind === 'here' ? 'From where you were' : 'From the office');
 const minutesLabel = (m) => (m < 60 ? `${m} min` : `${Math.floor(m / 60)} hr${m % 60 ? ` ${m % 60} min` : ''}`);
 const miles = (meters) => (meters / 1609.34).toFixed(1);
 const lengthLabel = (m) => LENGTHS.find(([v]) => v === m)?.[1] || minutesLabel(m);
@@ -381,17 +383,24 @@ const SUFFIXES = {
   circle: 'cir', cir: 'cir', way: 'way', trail: 'trl', trl: 'trl', highway: 'hwy', hwy: 'hwy', terrace: 'ter', ter: 'ter', loop: 'loop',
 };
 
-// "S. Kyrene Road" and "Kyrene Rd" are the same street; "Kyrene" alone matches either.
+const DIRS = { n: 'n', s: 's', e: 'e', w: 'w', north: 'n', south: 's', east: 'e', west: 'w' };
+
+// "S. Kyrene Road" and "Kyrene Rd" are the same street; "Kyrene" alone matches either. A direction after
+// the name tells two halves apart ("E Mission Bay Dr S" is the map's "Mission Bay Drive South"), and
+// spaces don't count ("Shoreline" is the map's "Shore Line Dr").
 function streetKey(name) {
   const words = String(name || '').toLowerCase().replace(/[.,']/g, ' ').split(/\s+/).filter((w) => w && w !== 'the');
-  if (words.length > 1 && /^(n|s|e|w|north|south|east|west)$/.test(words[0])) words.shift();
-  const last = words.at(-1);
-  const suffix = words.length > 1 && SUFFIXES[last] ? SUFFIXES[last] : '';
-  if (suffix) words[words.length - 1] = suffix;
-  return { full: words.join(' '), base: suffix ? words.slice(0, -1).join(' ') : words.join(' '), suffix };
+  if (words.length > 1 && DIRS[words[0]]) words.shift();
+  const post = words.length > 2 && DIRS[words.at(-1)] && SUFFIXES[words.at(-2)] ? DIRS[words.pop()] : '';
+  const suffix = words.length > 1 && SUFFIXES[words.at(-1)] ? SUFFIXES[words.pop()] : '';
+  return { base: words.join(''), suffix, post };
 }
 
-const sameStreet = (typed, mapped) => (typed.suffix ? typed.full === mapped.full : typed.base === mapped.base);
+// What was typed matches a map name when every part typed agrees; parts left out match anything.
+const sameStreet = (typed, mapped) => typed.base === mapped.base
+  && (!typed.suffix || typed.suffix === mapped.suffix) && (!typed.post || typed.post === mapped.post);
+// Two lines name the same street unless both give a direction and they differ (Mission Bay Dr S, then N).
+const sameName = (a, b) => a.base === b.base && (!a.post || !b.post || a.post === b.post);
 
 // One turn per line. "3. Turn left at the light onto Kyrene Rd heading south" -> left, Kyrene Rd.
 export function parseTurns(text) {
@@ -401,13 +410,16 @@ export function parseTurns(text) {
     const line = raw.replace(/^\s*(\d+\s*[.):-]|[-*•])\s*/, '').trim();
     if (!line) return;
     const dir = (line.match(/\b(left|right|u-?turn|straight|continue)\b/i)?.[1] || '').toLowerCase().replace('-', '');
-    let street = line.match(/\b(?:onto|on to|on)\s+(?:the\s+)?([0-9A-Za-z][\w .'-]*?)(?=\s*(?:[,.;(]|\b(?:and|then|until|for|toward|towards|heading|going|at|to|past|after)\b|$))/i)?.[1]?.trim();
+    const m = line.match(/\b(onto|on to|into|on)\s+(?:the\s+)?([0-9A-Za-z][\w .'-]*?)(?=\s*(?:[,.;(]|\b(?:and|then|until|for|toward|towards|heading|going|at|to|past|after)\b|$))/i);
+    let street = m?.[2]?.trim();
     // "Parallel park on the right" names a side, not a street.
     if (street && /^(right|left|right side|left side|light|corner|curb|shoulder|street|road)$/i.test(street)) street = '';
+    // "Into" means a street only when it reads like one ("into E Mission Bay Dr N"), not "into the plaza".
+    if (street && /^into$/i.test(m[1]) && !streetKey(street).suffix) street = '';
     const key = street && streetKey(street);
     const prev = turns.at(-1);
     // A line on the street you're already on ("Lane change on Ray Rd") is a note, not a turn.
-    if (street && !(prev && key.base === prev.key.base)) {
+    if (street && !(prev && sameName(key, prev.key))) {
       turns.push({ line: i + 1, text: line, dir: dir === 'continue' ? 'straight' : dir, street, key, notes: [] });
     } else if (prev) prev.notes.push(line);
     else startNotes.push(line);
@@ -416,6 +428,15 @@ export function parseTurns(text) {
 }
 
 const streetCells = new Map();
+
+async function loadStreets(keys) {
+  await Promise.all(keys.filter((k) => !streetCells.has(k)).map(async (k) => {
+    const { n, j } = await getJson(`route-spots/streets/${k}.json`);
+    const named = n.map((name) => ({ name, key: streetKey(name) }));
+    streetCells.set(k, j.map(([a, b, lat, lon]) => ({ a: named[a], b: named[b], at: { lat, lon } })));
+  }));
+  return keys.flatMap((k) => streetCells.get(k));
+}
 
 async function crossingsAround(center, meters) {
   if (!spotIndex) spotIndex = await getJson('route-spots/index.json');
@@ -431,12 +452,23 @@ async function crossingsAround(center, meters) {
       if (have.has(key)) keys.push(key);
     }
   }
-  await Promise.all(keys.filter((k) => !streetCells.has(k)).map(async (k) => {
-    const { n, j } = await getJson(`route-spots/streets/${k}.json`);
-    const named = n.map((name) => ({ name, key: streetKey(name) }));
-    streetCells.set(k, j.map(([a, b, lat, lon]) => ({ a: named[a], b: named[b], at: { lat, lon } })));
-  }));
-  return keys.flatMap((k) => streetCells.get(k));
+  return loadStreets(keys);
+}
+
+const meets = (c, a, b) => (sameStreet(a, c.a.key) && sameStreet(b, c.b.key)) || (sameStreet(a, c.b.key) && sameStreet(b, c.a.key));
+
+// "Greenfield & Baseline": a test route that starts away from the office starts where two streets meet.
+// The whole map area is searched (about 2.5 MB the first time, then kept by the phone).
+async function findCorner(text) {
+  const names = String(text || '').split(/\s*(?:&|\/|,|\band\b|\bat\b)\s*/i).map((n) => n.trim()).filter(Boolean);
+  if (names.length !== 2) throw new Error('Type the corner as two streets, like "Greenfield & Baseline".');
+  if (!spotIndex) spotIndex = await getJson('route-spots/index.json');
+  const [a, b] = names.map(streetKey);
+  const found = (await loadStreets(spotIndex.cells)).filter((c) => meets(c, a, b));
+  if (!found.length) throw new Error(`Couldn't find where ${names[0]} meets ${names[1]}. Check both spellings.`);
+  // The same two streets can meet more than once (a curving road); the corner nearest the office wins.
+  const at = found.reduce((best, c) => (dist(c.at, OFFICE) < dist(best.at, OFFICE) ? c : best)).at;
+  return { at, name: `${names[0]} & ${names[1]}` };
 }
 
 // Turns a line bearing difference into what a driver would call it.
@@ -456,12 +488,13 @@ function alongLine(line, i, meters, step) {
   return line[k];
 }
 
-async function buildFromTurns(text, startKind, signal, onStatus) {
+async function buildFromTurns(text, startKind, cornerText, signal, onStatus) {
   const { turns, startNotes } = parseTurns(text);
   if (turns.length < 2) throw new Error('Type at least two turns, one per line, like "Right on Ray Rd" then "Left on Kyrene Rd".');
   if (turns.length > MAX_TURNS + 1) throw new Error(`That's ${turns.length} turns; a route can take up to ${MAX_TURNS + 1}. Split it in two.`);
-  onStatus(startKind === 'here' ? 'Finding where you are…' : 'Finding the streets…');
-  const start = startKind === 'here' ? await hereNow() : OFFICE;
+  onStatus(startKind === 'here' ? 'Finding where you are…' : startKind === 'corner' ? 'Finding the corner…' : 'Finding the streets…');
+  const corner = startKind === 'corner' ? await findCorner(cornerText) : null;
+  const start = corner ? corner.at : startKind === 'here' ? await hereNow() : OFFICE;
   const crossings = await crossingsAround(start, 15000);
   if (!crossings.length) throw new Error("That start is outside the area the app has streets for (Phoenix to Queen Creek).");
   // Each turn after the first happens where the previous street meets this one.
@@ -471,7 +504,7 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
   for (let i = 1; i < turns.length; i++) {
     const prev = turns[i - 1];
     const cur = turns[i];
-    const found = crossings.filter((c) => (sameStreet(prev.key, c.a.key) && sameStreet(cur.key, c.b.key)) || (sameStreet(prev.key, c.b.key) && sameStreet(cur.key, c.a.key)));
+    const found = crossings.filter((c) => meets(c, prev.key, cur.key));
     if (!found.length) {
       problems.push(`Line ${cur.line}: couldn't find where ${prev.street} meets ${cur.street}. Check both spellings.`);
       continue;
@@ -482,7 +515,8 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
     points.push(cur);
     from = near.at;
   }
-  if (!points.length) throw new Error(problems[0]);
+  // None found at all usually means the start is wrong: the streets are searched around it.
+  if (!points.length) throw new Error(`${problems[0]} None of the turns were found near the start: for a route away from the office, start from a Corner.`);
   // The router is aimed 40 m past each turn, already on the new street and heading toward the next
   // crossing. Aimed at the crossing itself, it may cut through a side road and arrive from the wrong way.
   const nextAt = (k) => points[k + 1]?.at || start;
@@ -511,7 +545,8 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
       problems.push(`Line ${t.line}: the route doesn't go through where ${turns[turns.indexOf(t) - 1].street} meets ${t.street}. Check that turn on the map.`);
       return;
     }
-    const way = turnWay(alongLine(line, corner, 40, -1), line[corner], alongLine(line, corner, 40, 1));
+    // A turn right at the start (pulling out of the lot) has no road behind it to judge by.
+    const way = dist(t.at, start) < 80 ? t.dir : turnWay(alongLine(line, corner, 40, -1), line[corner], alongLine(line, corner, 40, 1));
     if ((t.dir === 'left' || t.dir === 'right') && way !== t.dir) {
       problems.push(`Line ${t.line} says ${t.dir}, but the route goes ${way === 'straight' ? 'straight on' : way} there. Check the turn or the street before it.`);
     }
@@ -533,7 +568,7 @@ async function buildFromTurns(text, startKind, signal, onStatus) {
   ];
   return {
     line: line.map((p) => [p.lat, p.lon]), seconds: feature.properties.summary.duration, meters: feature.properties.summary.distance,
-    stops, start, startKind, minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
+    stops, start, startKind, startName: corner?.name || '', minutes: Math.round(feature.properties.summary.duration / 60), level: 'test', fromTurns: true, problems,
     guide: makeGuide(feature),
   };
 }
@@ -660,7 +695,7 @@ function cleanRoutes(list) {
     } : null)).filter(Boolean).slice(0, MAX_TURNS + 1);
     return {
       id: r.id, name: String(r.name || 'Practice route').slice(0, 80), createdAt: num(r.createdAt) || Date.now(), line: r.line,
-      start: pt(r.start), startKind: r.startKind === 'here' ? 'here' : 'office', minutes: num(r.minutes) || 60,
+      start: pt(r.start), startKind: ['here', 'corner'].includes(r.startKind) ? r.startKind : 'office', startName: String(r.startName || '').slice(0, 60), minutes: num(r.minutes) || 60,
       level: LEVELS.some(([v]) => v === r.level) ? r.level : 'building', seconds: num(r.seconds) || 0, meters: num(r.meters) || 0, stops,
       fromTurns: r.fromTurns === true, guide: cleanGuide(r.guide),
     };
@@ -715,7 +750,7 @@ async function refreshTests(force = false) {
 const isAdmin = () => deps.device().status === 'approved' && deps.device().admin;
 const nextTestName = () => `Test route ${String.fromCharCode(65 + (rs.tests.length % 26))}`;
 const routePayload = (r) => ({
-  line: encodeLine(r.line), start: r.start, startKind: r.startKind, minutes: r.minutes, level: r.level, seconds: r.seconds, meters: r.meters, stops: r.stops,
+  line: encodeLine(r.line), start: r.start, startKind: r.startKind, startName: r.startName || '', minutes: r.minutes, level: r.level, seconds: r.seconds, meters: r.meters, stops: r.stops,
   fromTurns: !!r.fromTurns, guide: r.guide || null,
 });
 
@@ -813,7 +848,7 @@ function renderBuilder() {
   const skills = SKILLS.map(([id, label]) => [id, label, rs.level === 'beginner' && id === 'fw']);
   const card = (s, action) => `<button type="button" class="card rt-saved" data-action="${action}" data-id="${esc(s.id)}">
       <span class="rt-saved-name">${esc(s.name)}</span>
-      <span class="rt-saved-meta">${esc(minutesLabel(Math.round(s.seconds / 60)))} · ${esc(miles(s.meters))} mi · ${s.stops.length} stops · ${s.startKind === 'here' ? 'Started from a spot you picked' : 'From the office'}</span>
+      <span class="rt-saved-meta">${esc(minutesLabel(Math.round(s.seconds / 60)))} · ${esc(miles(s.meters))} mi · ${s.stops.length} stops · ${esc(s.startKind === 'here' ? 'Started from a spot you picked' : fromLabel(s))}</span>
     </button>`;
   const saved = rs.saved.map((s) => card(s, 'rt-open')).join('');
   // Test routes come first: on a test day they're what you reach for.
@@ -853,9 +888,9 @@ function renderRoute(route, mode) {
   const ios = deps.platform() !== 'android';
   const title = { new: 'Practice route', saved: 'Saved route', test: 'Test route', student: 'Practice route' }[mode];
   const total = `${minutesLabel(Math.round(route.seconds / 60))} · ${miles(route.meters)} mi · ${route.stops.length} ${route.fromTurns ? 'turns' : 'stops'}`;
-  const from = route.startKind === 'here' ? 'From where you were' : 'From the office';
+  const from = fromLabel(route);
   const about = student
-    ? `Tap Start driving for voice directions, turn by turn. From home it points you to the start first (${route.startKind === 'office' ? 'Key Skills Driving School, 6909 W Ray Rd, Chandler, ' : ''}the S pin).`
+    ? `Tap Start driving for voice directions, turn by turn. From home it points you to the start first (${route.startKind === 'office' ? 'Key Skills Driving School, 6909 W Ray Rd, Chandler, ' : route.startName ? `${route.startName}, ` : ''}the S pin).`
     : route.fromTurns ? `${from} · made from a list of turns` : `${from} · ${lengthLabel(route.minutes)} lesson · ${levelLabel(route.level)}`;
   const missing = route.missing?.length ? `<p class="hint">Nothing near enough for: ${esc(route.missing.map((k) => SKILLS.find(([id]) => id === k)?.[1]).join(', '))}.</p>` : '';
   // A typed-in route says plainly where it doesn't match the turns, before anyone saves it.
@@ -930,7 +965,11 @@ function renderTurns() {
     <main class="view with-tabs routes-view">
       <section class="card rt-form">
         <div class="rt-row"><span class="label">Start</span>
-          ${chips('rt-turns-start', [['office', 'Office'], ['here', 'Here (GPS)']], (v) => v === rs.turnsStart)}
+          ${chips('rt-turns-start', [['office', 'Office'], ['here', 'Here (GPS)'], ['corner', 'Corner']], (v) => v === rs.turnsStart)}
+          ${rs.turnsStart === 'corner'
+    ? `<label class="field rt-gap"><span class="label">Where two streets meet, by the start</span><input id="rt-corner" value="${esc(rs.turnsCorner)}" placeholder="Greenfield & Baseline" autocomplete="off" autocapitalize="words"></label>
+          <p class="hint">For a test route away from the office. The S pin goes on that corner.</p>`
+    : `<p class="hint">${rs.turnsStart === 'here' ? 'Uses where the phone is when you tap Build, so stand at the start.' : '6909 W Ray Rd, Chandler.'}</p>`}
         </div>
         <label class="field rt-row"><span class="label">Turns, one per line</span>
           <textarea id="rt-turns" rows="10" placeholder="Right on Ray Rd&#10;Left on Kyrene Rd&#10;Left on Warner Rd&#10;Parallel park on the right&#10;Left on 56th St&#10;Left on Ray Rd" autocapitalize="sentences">${esc(rs.turnsText)}</textarea></label>
@@ -951,12 +990,13 @@ function renderTurns() {
 async function buildTurns() {
   if (rs.building) return;
   rs.turnsText = document.getElementById('rt-turns')?.value || rs.turnsText;
+  rs.turnsCorner = document.getElementById('rt-corner')?.value ?? rs.turnsCorner;
   const controller = new AbortController();
   rs.building = { status: 'Reading the turns…', controller };
   rs.naming = null;
   renderTurns();
   try {
-    const route = await buildFromTurns(rs.turnsText, rs.turnsStart, controller.signal, setStatus);
+    const route = await buildFromTurns(rs.turnsText, rs.turnsStart, rs.turnsCorner, controller.signal, setStatus);
     if (controller.signal.aborted) return;
     rs.route = route;
     rs.building = null;
@@ -972,6 +1012,7 @@ async function buildTurns() {
 // The app's input listener hands typing in the turns box here, so a re-render keeps it.
 export function routesInput(el) {
   if (el.id === 'rt-turns') rs.turnsText = el.value;
+  if (el.id === 'rt-corner') rs.turnsCorner = el.value;
 }
 
 function redrawButtons() {
@@ -988,7 +1029,7 @@ function openNameBox(kind) {
 }
 
 function defaultName(route) {
-  if (route.fromTurns) return `Turns from ${route.startKind === 'here' ? 'here' : 'the office'}, ${minutesLabel(Math.round(route.seconds / 60))}`;
+  if (route.fromTurns) return `Turns from ${route.startKind === 'here' ? 'here' : route.startName || 'the office'}, ${minutesLabel(Math.round(route.seconds / 60))}`.slice(0, 80);
   const kinds = [...new Set(route.stops.map((s) => s.kind))].map((k) => SKILLS.find(([id]) => id === k)?.[1]).filter(Boolean);
   return `${route.startKind === 'here' ? 'Here' : 'Office'}, ${lengthLabel(route.minutes)}: ${kinds.slice(0, 3).join(', ')}`.slice(0, 80);
 }
@@ -1076,7 +1117,7 @@ async function saveRoute() {
   const name = (document.getElementById('rt-name')?.value || '').trim() || defaultName(route);
   const saved = {
     id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`,
-    name, createdAt: Date.now(), line: encodeLine(route.line), start: route.start, startKind: route.startKind,
+    name, createdAt: Date.now(), line: encodeLine(route.line), start: route.start, startKind: route.startKind, startName: route.startName || '',
     minutes: route.minutes, level: route.level, seconds: route.seconds, meters: route.meters, stops: route.stops, fromTurns: !!route.fromTurns,
     guide: route.guide || null,
   };
